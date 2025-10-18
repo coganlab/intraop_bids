@@ -2,19 +2,18 @@
 Classes for writing data to BIDS format using mne-bids.
 """
 from pathlib import Path
-from typing import Optional, Dict, Union, List, Any
+from typing import Optional, Union
 from mne_bids import BIDSPath, write_raw_bids, write_anat
 import numpy as np
-from ecog_bids_pipeline.loaders import (
+from loaders import (
     find_subject_files,
     load_ieeg_data,
     load_experiment_info,
     load_event_data,
     load_audio_data,
 )
-from ecog_bids_pipeline.config import (
+from config import (
     DEFAULT_EVENT_PROCESSING,
-    DEFAULT_TASK_NAME,
 )
 
 class BIDSConverter:
@@ -27,33 +26,30 @@ class BIDSConverter:
 
     def __init__(
         self,
-        subject_id: str,
-        task_name: str,
-        source_dir: Union[str, Path],
+        subject: str,
+        task: str,
+        source_path: Union[str, Path],
         bids_root: Optional[Union[str, Path]] = None,
-        audio_dir: Optional[Union[str, Path]] = None,
-        anat_dir: Optional[Union[str, Path]] = None,
-        session_id: Optional[str] = None,
+        audio_path: Optional[Union[str, Path]] = None,
+        recon_path: Optional[Union[str, Path]] = None,
     ):
         """
         Initialize the BIDS converter with source data information.
 
         Args:
             source_dir: Directory containing the source data files
-            subject_id: Subject identifier (e.g., 'S1')
-            task_name: Name of the task (e.g., 'lexical')
+            subject: Subject identifier (e.g., 'S1')
+            task: Name of the task (e.g., 'lexical')
             bids_root: Root directory for the BIDS dataset
-            session_id: Optional session identifier (e.g., 'pre', 'post', '01')
-            audio_dir: Optional directory containing audio files
-            anat_dir: Optional directory containing anatomical files
+            audio_path: Optional directory containing audio files
+            recon_path: Optional directory containing anatomical files
         """
-        self.subject_id = subject_id
-        self.task_name = task_name
-        self.session_id = session_id
-        self.source_dir = Path(source_dir)
-        self.audio_dir = Path(audio_dir) if audio_dir else None
-        self.anat_dir = Path(anat_dir) if anat_dir else None
-        self.bids_root = Path(bids_root) if bids_root else None
+        self.subject = subject
+        self.task = task
+        self.source_path = Path(source_path)
+        self.audio_path = Path(audio_path)
+        self.recon_path = Path(recon_path)
+        self.bids_root = Path(bids_root)
 
         # Will be populated when data is loaded
         self.experiment_info = None
@@ -73,7 +69,7 @@ class BIDSConverter:
             ValueError: If there's an error loading the data
         """
         # Find all required files
-        files = find_subject_files(self.source_dir, self.subject_id)
+        files = find_subject_files(self.source_path, self.subject)
 
         # Load experiment metadata
         self.experiment_info = load_experiment_info(files['experiment_mat'])
@@ -84,8 +80,8 @@ class BIDSConverter:
         # Load events
         self.events = load_event_data(files['trials_mat'])
 
-        if self.audio_dir is not None:
-            wav_dir = find_subject_files(self.source_dir, self.subject_id, self.audio_dir)['audio_wav']
+        if self.audio_path is not None:
+            wav_dir = find_subject_files(self.source_path, self.subject, self.audio_path)['audio_wav']
             self.audio_files, self.audio_fs = load_audio_data(wav_dir)
 
         return self
@@ -103,8 +99,8 @@ class BIDSConverter:
     def add_montage_to_raw(self):
         """Add a montage to the raw object."""
         # load RAS file from anat directory
-        # ras_file = self.anat_dir / f"{self.subject_id}/elec_recon/{self.subject_id}_elec_locations_RAS_brainshifted.txt"
-        ras_file = self.anat_dir / f"{self.subject_id}/eleecon/{self.subject_id}_elec_locations_RAS_brainshifted.txt"
+        # ras_file = self.recon_path / f"{self.subject}/elec_recon/{self.subject}_elec_locations_RAS_brainshifted.txt"
+        ras_file = self.recon_path / f"{self.subject}/eleecon/{self.subject}_elec_locations_RAS_brainshifted.txt"
 
         # First check if file exists
         if not ras_file.exists():
@@ -268,38 +264,31 @@ class BIDSConverter:
             Path: Path to the created subject or session directory.
 
         Raises:
-            ValueError: If bids_root or subject_id is not set
+            ValueError: If bids_root or subject is not set
         """
         if self.bids_root is None:
             raise ValueError("bids_root must be set to create BIDS directory structure")
-        if not hasattr(self, 'subject_id'):
-            raise ValueError("subject_id must be set")
+        if not hasattr(self, 'subject'):
+            raise ValueError("subject must be set")
 
         # Create main BIDS directories
         self.bids_root.mkdir(parents=True, exist_ok=True)
 
         # Create subject directory (sub-<label>)
-        subject_dir = self.bids_root / f"sub-{self.subject_id}"
+        subject_dir = self.bids_root / f"sub-{self.subject}"
         subject_dir.mkdir(exist_ok=True)
 
         # Anatomical data goes in subject root (session-less)
         (subject_dir / "anat").mkdir(exist_ok=True)
+        # For session-less data, create ieeg directory in subject root
+        (subject_dir / "ieeg").mkdir(exist_ok=True)
 
-        # For iEEG data, create session directory if session_id is provided
-        if self.session_id is not None:
-            session_dir = subject_dir / f"ses-{self.session_id}"
-            session_dir.mkdir(exist_ok=True)
-            (session_dir / "ieeg").mkdir(exist_ok=True, parents=True)
-            return session_dir
-        else:
-            # For session-less data, create ieeg directory in subject root
-            (subject_dir / "ieeg").mkdir(exist_ok=True)
-            return subject_dir
+        return subject_dir
 
 
     def save_to_derivative(
         self,
-        data: Any,
+        data,
         folder: str,
         filename: str,
         file_type: str = 'wav',
@@ -332,7 +321,6 @@ class BIDSConverter:
     def convert_to_bids(
             self,
             output_dir: Optional[Union[str, Path]] = None,
-            run: Optional[Union[str, int]] = None,
             overwrite: bool = True,
             verbose: bool = True
     ) -> BIDSPath:
@@ -341,7 +329,6 @@ class BIDSConverter:
 
         Args:
             output_dir: Optional root directory for BIDS dataset. Uses self.bids_root if None.
-            run: Optional run number.
             overwrite: Whether to overwrite existing files.
             verbose: Whether to print progress messages.
 
@@ -363,12 +350,9 @@ class BIDSConverter:
 
         # Create BIDS path with session if provided
         bids_path = BIDSPath(
-            subject=self.subject_id.lstrip('sub-'),  # Remove 'sub-' prefix if present
-            session=self.session_id,
-            task=self.task_name,
-            acquisition='01',
+            subject=self.subject.lstrip('sub-'),  # Remove 'sub-' prefix if present
+            task=self.task,
             root=str(bids_root),
-            run=str(run) if run is not None else '01',
             datatype='ieeg',
             suffix='ieeg',
         )
@@ -395,6 +379,8 @@ class BIDSConverter:
         # Store the bids_path for later use
         self.bids_path = bids_path
 
+        self._convert_anat_to_bids(overwrite=overwrite, verbose=verbose)
+
         if hasattr(self, 'audio_files') and self.audio_files is not None:
             self.save_to_derivative(
                 data=self.audio_files,
@@ -405,7 +391,6 @@ class BIDSConverter:
                 verbose=verbose
             )
 
-        self._convert_anat_to_bids(overwrite=overwrite, verbose=verbose)
 
         return self.bids_path
 
@@ -444,8 +429,8 @@ class BIDSConverter:
             verbose: Whether to print verbose output.
         """
         possible_dirs = [
-            self.anat_dir / self.subject_id / 'elec_recon',
-            self.anat_dir / self.subject_id / 'mri',
+            self.recon_path / self.subject / 'elec_recon',
+            self.recon_path / self.subject / 'mri',
         ]
 
         # Try each possible directory
@@ -460,12 +445,12 @@ class BIDSConverter:
         # If no valid directory was found
         if subject_anat_source_dir is None:
             if verbose:
-                print(f"Could not find anatomical directory for subject {self.subject_id} in any of: {[str(d) for d in possible_dirs]}")
+                print(f"Could not find anatomical directory for subject {self.subject} in any of: {[str(d) for d in possible_dirs]}")
             return
 
         # --- T1w Conversion ---
         t1w_bids_path = BIDSPath(
-                subject=self.subject_id,
+                subject=self.subject,
                 session=self.session_id,
                 datatype='anat',
                 suffix='T1w',
@@ -489,7 +474,7 @@ class BIDSConverter:
                 print(f"Error writing T1w anatomical data: {e}")
         else:
             import nibabel as nib
-            subject_anat_source_dir = self.anat_dir / self.subject_id / 'mri'
+            subject_anat_source_dir = self.recon_path / self.subject / 'mri'
             native_mgz = subject_anat_source_dir / 'native.mgz'
             # convert mgz to nii.gz
             try:
@@ -517,7 +502,7 @@ class BIDSConverter:
         ct_source_file = subject_anat_source_dir / 'postimpRaw.nii.gz'
         if ct_source_file.exists():
             ct_bids_path = BIDSPath(
-                subject=self.subject_id,
+                subject=self.subject,
                 session=self.session_id, # CT is often co-registered to T1w of a specific session
                 datatype='anat',
                 suffix='ct', # BIDS suffix for CT scans
@@ -562,123 +547,71 @@ class BIDSConverter:
                 print(f"CT file (postimpRaw.nii.gz) not found: {ct_source_file}. Skipping CT conversion.")
 
 
-def parse_arguments():
-    """Parse command line arguments."""
-    import argparse
 
-    parser = argparse.ArgumentParser(
-        description='Convert ECoG data to BIDS format',
-        formatter_class=argparse.ArgumentDefaultsHelpFormatter
+def main(
+    source_path: Path,
+    bids_root: Path,
+    subject: str,
+    task: str,
+    audio_path: Optional[Path] = None,
+    recon_path: Optional[Path] = None,
+):
+    """Run the BIDS conversion with command line arguments."""
+
+    # Initialize the converter
+    bids_converter = BIDSConverter(
+        source_path=source_path,
+        subject=subject,
+        task=task,
+        bids_root=bids_root,
+        audio_path=audio_path,
+        recon_path=recon_path,
     )
 
-    # Required arguments
-    required = parser.add_argument_group('required arguments')
-    required.add_argument(
-        '--source-dir',
+    # Load and convert the data
+    bids_converter.load_data()
+    bids_converter.convert_to_bids()
+
+
+if __name__ == "__main__":
+    import argparse
+    parser = argparse.ArgumentParser()
+
+    parser.add_argument(
+        "--source-path",
         default=Path("/Users/shinanlin/Library/CloudStorage/Box-Box/CoganLab/Data/Micro/Processed Data"),
         type=Path,
         help='Directory containing the source data files'
     )
-    required.add_argument(
-        '--bids-root',
+    parser.add_argument(
+        "--bids-root",
         default=Path("./bids/lexical"),
         type=Path,
-        help='Root directory for the BIDS dataset'
+        help='Root directory to save the BIDS dataset'
     )
-    required.add_argument(
-        '--subject',
-        default="S52",
-        help='Subject identifier (e.g., S33)'
-    )
-
     parser.add_argument(
-        '--audio-dir',
+        "--subject",
+        default="S41",
+        help='Subject identifier (e.g., S41)'
+    )
+    parser.add_argument(
+        "--audio-path",
         default=Path("/Users/shinanlin/Library/CloudStorage/Box-Box/CoganLab/Data/Micro/microphone"),
         type=Path,
         help='Directory containing audio files (optional)'
     )
     parser.add_argument(
-        '--anat-dir',
+        "--recon-path",
         default=Path("/Users/shinanlin/Library/CloudStorage/Box-Box/ECoG_Recon"),
         type=Path,
         help='Parent directory containing subject anatomical subdirectories (e.g., ECoG_Recon/)'
     )
     parser.add_argument(
-        '--task',
-        default=DEFAULT_TASK_NAME,
-        help=f'Name of the task (default: {DEFAULT_TASK_NAME})'
-    )
-    parser.add_argument(
-        '--session',
-        default=None,
-        help='Session identifier (e.g., 01, pre, post)'
-    )
-    parser.add_argument(
-        '--run',
-        type=int,
-        default=None,
-        help='Run number (for multiple runs of the same task)'
-    )
-    parser.add_argument(
-        '--overwrite',
-        action='store_true',
-        default=True,
-        help='Overwrite existing BIDS files'
-    )
-    parser.add_argument(
-        '--verbose',
-        action='store_true',
-        default=False,
-        help='Print verbose output'
+        "--task",
+        default="lexical",
+        help='Name of the task (default: lexical)'
     )
 
-    return parser.parse_args()
+    args = parser.parse_args()
 
-
-def main():
-    """Run the BIDS conversion with command line arguments."""
-    args = parse_arguments()
-
-    if args.verbose:
-        print(f"Starting BIDS conversion for subject {args.subject}")
-        print(f"Source directory: {args.source_dir}")
-        print(f"BIDS root: {args.bids_root}")
-        if args.audio_dir:
-            print(f"Audio directory: {args.audio_dir}")
-        if args.anat_dir: # Add this for verbose output
-            print(f"Anatomical directory: {args.anat_dir}")
-
-    try:
-        # Initialize the converter
-        bids_converter = BIDSConverter(
-            source_dir=args.source_dir,
-            subject_id=args.subject,
-            task_name=args.task,
-            session_id=args.session,
-            bids_root=args.bids_root,
-            audio_dir=args.audio_dir,
-            anat_dir=args.anat_dir # Add anat_dir here
-        )
-
-        # Load and convert the data
-        bids_converter.load_data()
-        bids_path = bids_converter.convert_to_bids(
-            run=args.run,
-            overwrite=args.overwrite,
-            verbose=args.verbose
-        )
-
-        if args.verbose:
-            print(f"\nBIDS conversion complete!")
-            print(f"Output files written to: {bids_path.directory}")
-
-    except Exception as e:
-        print(f"Error during BIDS conversion: {str(e)}", file=sys.stderr)
-        sys.exit(1)
-
-
-if __name__ == "__main__":
-    import sys
-    from pathlib import Path
-
-    main()
+    main(**vars(args))

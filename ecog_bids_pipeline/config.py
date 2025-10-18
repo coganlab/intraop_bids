@@ -51,7 +51,7 @@ DEFAULT_EVENT_PROCESSING = {
                        # MNE point events inherently have 0 duration.
         },
         "trial_type": {
-            "source_field": "phoneme" # This will be the 'trial_type' column in BIDS events.tsv
+            "source_field": "Stimulus" # This will be the 'trial_type' column in BIDS events.tsv
         }
     }
 }
