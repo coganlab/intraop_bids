@@ -1,5 +1,30 @@
 """
-Classes for writing data to BIDS format using mne-bids.
+ECoG/iEEG to BIDS conversion utilities built on mne-bids.
+
+Pipeline overview
+- Load subject-specific source files using loader helpers in `loaders.py`.
+- Load experiment/session metadata (`load_experiment_info()`), iEEG raw
+  data (`load_ieeg_data()`), events (`load_event_data()`), and optional
+  microphone audio (`load_audio_data()`).
+- Process events and update the `mne.io.Raw` object via
+  `BIDSConverter.update_raw_object()`:
+  - Convert event structures to MNE-style `events` array and `event_id`.
+  - Ensure the raw has a montage. If a subject RAS montage exists in
+    `recon_path/<sub>/elec_recon/*RAS_brainshifted.txt`, load it; otherwise
+    generate a custom montage based on the provided channel map.
+- Create a BIDS directory tree under `bids_root` (session-less by default),
+  and write iEEG data to BIDS with `write_raw_bids()`.
+- Convert anatomical data (T1w and CT when present) into `anat/`, writing
+  placeholder sidecar JSONs to be completed later (e.g., with fiducials).
+- Optionally save microphone audio as a derivative in
+  `derivatives/audio/sub-<label>/`.
+
+Notes and assumptions
+- The code relies on helper loaders in `loaders.py` and configuration from
+  `config.py`.
+- Some fields (e.g., session handling) are currently minimal or implicit.
+- The RAS montage file is expected to be whitespace-delimited with columns:
+  prefix, number, x, y, z, hemisphere, grid.
 """
 from pathlib import Path
 from typing import Optional, Union
@@ -18,10 +43,14 @@ from config import (
 
 class BIDSConverter:
     """
-    Main class for converting ECoG data to BIDS format.
+    Converter for writing iEEG/ECoG data to BIDS.
 
-    This class handles the creation of BIDS directory structure, conversion of
-    raw data, and generation of BIDS-compliant metadata files.
+    Responsibilities
+    - Manage source paths, subject/task identifiers, and optional audio/anat paths.
+    - Load experiment metadata, iEEG raw, events, and optional audio.
+    - Process events and ensure `raw` has a montage (RAS-based or synthetic).
+    - Create a BIDS directory structure and write iEEG data using `mne-bids`.
+    - Convert available anatomical images (T1w, CT) and create placeholder JSON sidecars.
     """
 
     def __init__(
@@ -34,15 +63,21 @@ class BIDSConverter:
         recon_path: Optional[Union[str, Path]] = None,
     ):
         """
-        Initialize the BIDS converter with source data information.
+        Initialize a converter bound to the given subject/task and paths.
 
-        Args:
-            source_dir: Directory containing the source data files
-            subject: Subject identifier (e.g., 'S1')
-            task: Name of the task (e.g., 'lexical')
-            bids_root: Root directory for the BIDS dataset
-            audio_path: Optional directory containing audio files
-            recon_path: Optional directory containing anatomical files
+        Args
+        - subject: Subject label (e.g., "S26").
+        - task: BIDS task label (e.g., "phoneme").
+        - source_path: Root directory containing the source data to convert.
+        - bids_root: Root directory for the output BIDS dataset. If None, must
+          be provided later to `convert_to_bids()`.
+        - audio_path: Optional directory containing microphone audio files.
+        - recon_path: Optional parent directory containing anatomical data
+          (e.g., `ECoG_Recon/<sub>/...`).
+
+        Notes
+        - Paths should be valid and readable. Audio/anat are optional.
+        - Session handling is not explicit; current flow assumes session-less.
         """
         self.subject = subject
         self.task = task
@@ -59,14 +94,21 @@ class BIDSConverter:
 
     def load_data(self):
         """
-        Load all required data using the loader functions.
+        Load experiment metadata, iEEG raw, events, and optional audio.
 
-        Returns:
-            self: Returns the instance for method chaining
+        Flow
+        - Discover subject-specific file paths via `find_subject_files()`.
+        - Load experiment metadata (`load_experiment_info()`).
+        - Load iEEG `mne.io.Raw` (`load_ieeg_data()`), using metadata as needed.
+        - Load trial/event structures (`load_event_data()`).
+        - If `audio_path` is provided, find WAV directory and `load_audio_data()`.
 
-        Raises:
-            FileNotFoundError: If any required files are missing
-            ValueError: If there's an error loading the data
+        Returns
+        - self: Enables method chaining.
+
+        Raises
+        - FileNotFoundError: If required files are missing.
+        - ValueError: If loader functions encounter malformed inputs.
         """
         # Find all required files
         files = find_subject_files(self.source_path, self.subject)
@@ -87,7 +129,17 @@ class BIDSConverter:
         return self
 
     def update_raw_object(self):
-        """Update the raw object with processed events."""
+        """
+        Update the `raw` object with processed events and ensure montage.
+
+        Steps
+        - Build `events` and `event_id` via `handling_event()` and attach to this instance.
+        - If no montage is present on `raw`, attempt to add one via
+          `add_montage_to_raw()` (RAS montage if available, otherwise custom).
+
+        Returns
+        - mne.io.Raw: The updated raw instance.
+        """
         self.events, self.event_id = self.handling_event()
 
         # make custom montage if no montage is found in the raw object
@@ -97,10 +149,20 @@ class BIDSConverter:
         return self.raw
 
     def add_montage_to_raw(self):
-        """Add a montage to the raw object."""
+        """
+        Add a montage to `raw` using subject RAS file when present, else fallback.
+
+        Logic
+        - Construct a path to `<recon_path>/<sub>/elec_recon/*RAS_brainshifted.txt`.
+        - If RAS file is missing or fails to load, make a synthetic montage from
+          the channel map (layout-based) with a placeholder coordinate frame.
+
+        Returns
+        - mne.io.Raw: The raw instance with montage set.
+        """
         # load RAS file from anat directory
         # ras_file = self.recon_path / f"{self.subject}/elec_recon/{self.subject}_elec_locations_RAS_brainshifted.txt"
-        ras_file = self.recon_path / f"{self.subject}/eleecon/{self.subject}_elec_locations_RAS_brainshifted.txt"
+        ras_file = self.recon_path / f"{self.subject}/elec_recon/{self.subject}_elec_locations_RAS_brainshifted.txt"
 
         # First check if file exists
         if not ras_file.exists():
@@ -124,17 +186,15 @@ class BIDSConverter:
     @staticmethod
     def load_ras_montage(ras_file):
         """
-        Load a montage from a RAS file and include hemisphere information.
+        Load a RAS montage and attach hemisphere labels.
 
-        Parameters
-        ----------
-        ras_file : pathlib.Path
-            Path to the RAS file containing electrode coordinates and hemisphere info
+        Args
+        - ras_file: Path to a whitespace-delimited text file with columns:
+          prefix, number, x, y, z, hemisphere, grid. Coordinates expected in
+          RAS space.
 
         Returns
-        -------
-        mne.channels.DigMontage
-            MNE montage object with electrode positions and hemisphere information
+        - mne.channels.DigMontage: Electrode positions tagged with hemisphere.
         """
         import pandas as pd
         from mne.channels import make_dig_montage
@@ -169,7 +229,17 @@ class BIDSConverter:
 
     @staticmethod
     def make_custom_montage(experiment_info):
-        """Create a custom montage for the iEEG data."""
+        """
+        Create a synthetic montage from `experiment_info['channel_map']`.
+
+        Notes
+        - Generates a 2D grid layout and maps channels to [x, y, 0] placeholders.
+        - The coordinate frame is set to 'ras' as a pragmatic placeholder to
+          satisfy downstream checks; these are not real RAS coordinates.
+
+        Returns
+        - mne.channels.DigMontage: Synthetic montage with 2D layout positions.
+        """
         from mne.channels import Layout, make_dig_montage
         channel_map = experiment_info['channel_map']
         n_rows, n_cols = channel_map.shape
@@ -196,7 +266,7 @@ class BIDSConverter:
             kind='custom',
             ids=np.arange(1, len(names) + 1),
             box=box
-            )
+        )
         ch_pos = {name: [x, y, 0] for name, (x, y, _, _) in zip(layout.names, layout.pos)}
         # remember this is a fake montage, the coord_frame is set to be 'ras' to pass the check
         montage = make_dig_montage(ch_pos, coord_frame='ras')
@@ -204,12 +274,23 @@ class BIDSConverter:
         return montage
 
     def handling_event(self):
-        """Process raw event data into MNE-compatible events and event_id mapping.
+        """
+        Convert trial/event structures to MNE `events` and `event_id`.
 
-        Returns:
-            tuple: (events_array, event_id_dict) where:
-                - events_array: numpy array of shape (n_events, 3)
-                - event_id_dict: mapping from event names to integer IDs
+        Event processing
+        - Pull config from `DEFAULT_EVENT_PROCESSING['bids_events_columns']`.
+        - Drop trials with empty `trial_type` entries.
+        - Convert event onsets to sample indices using `raw.info['sfreq']`,
+          applying a factor of `sfreq/3e4` to match the event time base.
+        - Build `event_id` by enumerating unique trial types.
+
+        Returns
+        - (events, event_id):
+          - events: int array of shape (n_events, 3) [sample, 0, code].
+          - event_id: dict mapping trial_type strings to integer codes.
+
+        Raises
+        - KeyError/ValueError on missing fields or malformed inputs.
         """
         if not hasattr(self, 'events') or self.events is None:
             print("No event data to process")
@@ -258,13 +339,13 @@ class BIDSConverter:
 
     def create_bids_directory(self) -> Path:
         """
-        Create the BIDS directory structure.
+        Create the top-level BIDS directory structure (session-less).
 
-        Returns:
-            Path: Path to the created subject or session directory.
+        Returns
+        - pathlib.Path: `sub-<label>` directory path within `bids_root`.
 
-        Raises:
-            ValueError: If bids_root or subject is not set
+        Raises
+        - ValueError: If `bids_root` or `subject` is unset.
         """
         if self.bids_root is None:
             raise ValueError("bids_root must be set to create BIDS directory structure")
@@ -285,7 +366,6 @@ class BIDSConverter:
 
         return subject_dir
 
-
     def save_to_derivative(
         self,
         data,
@@ -295,7 +375,20 @@ class BIDSConverter:
         description: str = 'raw',
         **kwargs
     ) -> Optional[Path]:
+        """
+        Save arrays (e.g., audio) into `derivatives/<folder>/` with BIDSPath.
 
+        Args
+        - data: Array-like data to write (e.g., audio samples).
+        - folder: Derivative subfolder name (e.g., "audio").
+        - filename: Base name for the output file (without extension).
+        - file_type: Output extension (e.g., "wav").
+        - description: BIDS description label stored in the `BIDSPath`.
+        - kwargs: Reserved for future extensions.
+
+        Returns
+        - Optional[pathlib.Path]: Final path of the written derivative, or None.
+        """
         derivative_dir = self.bids_path.copy()
         derivative_dir.update(
             root=self.bids_root / "derivatives" / folder,
@@ -325,18 +418,24 @@ class BIDSConverter:
             verbose: bool = True
     ) -> BIDSPath:
         """
-        Convert data to BIDS format using instance attributes.
+        Convert loaded data to BIDS using `mne-bids` writers.
 
-        Args:
-            output_dir: Optional root directory for BIDS dataset. Uses self.bids_root if None.
-            overwrite: Whether to overwrite existing files.
-            verbose: Whether to print progress messages.
+        Steps
+        - Ensure `raw` is present; create BIDS directories.
+        - Build a `BIDSPath` (session-less) and ensure destination exists.
+        - Update `raw` (events + montage) and call `write_raw_bids()`.
+        - Convert available anatomical images and write derivatives if any.
 
-        Returns:
-            BIDSPath to the created file.
+        Args
+        - output_dir: Overrides `self.bids_root` if provided.
+        - overwrite: Whether to overwrite existing outputs.
+        - verbose: Verbosity flag for writers.
 
-        Raises:
-            ValueError: If data is not loaded or required attributes are missing
+        Returns
+        - mne_bids.BIDSPath: Path for the written iEEG file within the BIDS tree.
+
+        Raises
+        - ValueError: If data is not loaded or required attributes are missing.
         """
         if self.raw is None:
             raise ValueError("No data loaded. Call load_data() first.")
@@ -391,15 +490,15 @@ class BIDSConverter:
                 verbose=verbose
             )
 
-
         return self.bids_path
 
     def _create_empty_sidecar(self, bids_path: BIDSPath, modality: str):
-        """Create an empty JSON sidecar file for anatomical data.
+        """
+        Create a minimal JSON sidecar for an anatomical image placeholder.
 
-        Args:
-            bids_path: The BIDSPath object for the anatomical file
-            modality: The modality ('T1w' or 'CT')
+        Args
+        - bids_path: Target BIDSPath for the anatomical image.
+        - modality: "T1w" or "CT".
         """
         import json
 
@@ -422,11 +521,18 @@ class BIDSConverter:
 
     def _convert_anat_to_bids(self, overwrite: bool = True, verbose: bool = True):
         """
-        Convert anatomical data (T1w and CT) to BIDS format.
+        Locate T1w/CT sources and write to `anat/` with placeholder sidecars.
 
-        Args:
-            overwrite: Whether to overwrite existing anatomical files.
-            verbose: Whether to print verbose output.
+        Behavior
+        - Searches for subject anatomical data under `<recon_path>/<sub>/` in
+          typical subfolders (e.g., `elec_recon/`, `mri/`).
+        - Writes T1w (.nii.gz or converted from .mgz) and CT if present.
+        - Generates empty JSON sidecars to be filled later with fiducials and
+          alignment details.
+
+        Args
+        - overwrite: Whether to overwrite existing anatomical outputs.
+        - verbose: Print progress messages.
         """
         possible_dirs = [
             self.recon_path / self.subject / 'elec_recon',
@@ -547,7 +653,6 @@ class BIDSConverter:
                 print(f"CT file (postimpRaw.nii.gz) not found: {ct_source_file}. Skipping CT conversion.")
 
 
-
 def main(
     source_path: Path,
     bids_root: Path,
@@ -556,7 +661,13 @@ def main(
     audio_path: Optional[Path] = None,
     recon_path: Optional[Path] = None,
 ):
-    """Run the BIDS conversion with command line arguments."""
+    """
+    Entry point to run the conversion from the command line.
+
+    Performs
+    - Initialize `BIDSConverter` with provided paths and labels.
+    - Load source data and write outputs to a BIDS dataset.
+    """
 
     # Initialize the converter
     bids_converter = BIDSConverter(
@@ -585,13 +696,13 @@ if __name__ == "__main__":
     )
     parser.add_argument(
         "--bids-root",
-        default=Path("./bids/lexical"),
+        default=Path("./bids/phoneme"),
         type=Path,
         help='Root directory to save the BIDS dataset'
     )
     parser.add_argument(
         "--subject",
-        default="S41",
+        default="S26",
         help='Subject identifier (e.g., S41)'
     )
     parser.add_argument(
@@ -608,8 +719,8 @@ if __name__ == "__main__":
     )
     parser.add_argument(
         "--task",
-        default="lexical",
-        help='Name of the task (default: lexical)'
+        default="phoneme",
+        help='Name of the task (default: phoneme)'
     )
 
     args = parser.parse_args()
