@@ -1,0 +1,16 @@
+name: intraop_bids_TEST
+channels:
+  - defaults
+  - conda-forge
+dependencies:
+  - python=3.13.9
+  - mne
+  - mne-bids
+  - numpy
+  - scipy
+  - matplotlib
+  - pip
+  - montreal-forced-aligner
+  - pip:
+      - noisereduce
+      - hydra-core
