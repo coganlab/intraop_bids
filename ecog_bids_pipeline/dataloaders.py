@@ -50,21 +50,32 @@ class rhdLoader:
         print(f'Found files: {rhd_files}')
         all_data = self._build_full_rhd_data(rhd_files)
 
-        # convert amplifier data to MNE Raw object
-        raw = self._convert_to_mne_raw(all_data['raw_data'],
-                                       all_data['fs'])
-        all_data['raw_data'] = raw
-
         # calculate bad channels based on impedance
         bad_channels = self._get_high_impedance_channels(all_data['impedance'])
         all_data['bad_channels'] = bad_channels
 
-        # save data as object attributes
-        for k, v in all_data.items():
-            self.__setattr__(k, v)
-        logger.info('...data loading complete.')
-        print('Successfully loaded RHD data to rhdLoader object attributes.')
+        
+        # convert amplifier data to MNE Raw object
+        raw = self._convert_to_mne_raw(all_data['raw_data'],
+                                       all_data['fs'], all_data['bad_channels'])
+        # see if we can free up memory here
+        del all_data['raw_data'] 
+        del all_data['fs']
+        del all_data['bad_channels']
 
+        
+        # save raw data to output dir
+        _ = self._save_mne_raw(raw, f'sub-{self.subject}_raw.edf')
+        
+        # save misc rhd data as numpy files in output dir
+        _ = self._save_rhd_misc_data(all_data['trigger'],
+                                     f'sub-{self.subject}_trigger.npy')
+        _ = self._save_rhd_misc_data(all_data['mic'],
+                                     f'sub-{self.subject}_mic.npy')
+        _ = self._save_rhd_misc_data(all_data['impedance'],
+                                     f'sub-{self.subject}_impedance.npy')
+
+        logger.info('...data loading complete.')
         return self
 
     def make_cue_events(self):
@@ -358,27 +369,35 @@ class rhdLoader:
         return chan_map
 
     def _build_full_rhd_data(self, rhd_files):
-        amplifier_data_all = []
-        trigger_all = []
-        mic_all = []
-        impedance_all = []
+        n_chans = np.nanmax(self.channel_map).astype(int) # 1-indexed chans
+        amplifier_data_all = np.empty((n_chans, 0), dtype=np.float32)
+        trigger_all = np.empty((0,), dtype=np.float32)
+        mic_all = np.empty((0,), dtype=np.float32)
+        impedance_all = np.empty((0, n_chans), dtype=np.float32)
         # store data from each RHD file (corresponds to 1 min of data)
         for rhd_file in rhd_files:
             logger.info(f'Loading RHD file: {rhd_file.name}')
             data = read_data(rhd_file)
-            amplifier_data_all.append(data['amplifier_data'])
+            amplifier_data_all = np.append(
+                amplifier_data_all,
+                data['amplifier_data'].astype(np.float32),
+                axis=1)
+            trigger_all = np.append(
+                trigger_all,
+                data['board_adc_data'][0, :].astype(np.float32))
+            mic_all = np.append(
+                mic_all,
+                data['board_adc_data'][1, :].astype(np.float32))
+            impedance_all = np.append(
+                impedance_all,
+                self._get_impedance_magnitudes(data)[np.newaxis, :].astype(np.float32),
+                axis=0)
+
             logger.info(f'      Data shape: {data["amplifier_data"].shape}')
-            trigger_all.append(data['board_adc_data'][0, :])
             logger.info(f'      Trigger shape: {data["board_adc_data"][0, :].shape}')
-            mic_all.append(data['board_adc_data'][1, :])
             logger.info(f'      Mic shape: {data["board_adc_data"][1, :].shape}')
-            impedance_all.append(self._get_impedance_magnitudes(data))
             logger.info(f'      Impedance shape: '
                         f'{impedance_all[-1].shape}')
-        # combine to single array per data type
-        amplifier_data_all = np.concatenate(amplifier_data_all, axis=1)
-        trigger_all = np.concatenate(trigger_all)
-        mic_all = np.concatenate(mic_all)
 
         # save impedance as mean across files (don't know if this changes per
         # file or not but if it doesn't mean is still ok)
@@ -392,7 +411,8 @@ class rhdLoader:
         }
         return full_data
 
-    def _convert_to_mne_raw(self, amplifier_data, fs, units='uV'):
+    def _convert_to_mne_raw(self, amplifier_data, fs, bad_channels,
+                            units='uV'):
         match units:
             case "V":
                 factor = 1
@@ -407,15 +427,40 @@ class rhdLoader:
                                           " not implemented yet")
         channels = self.channel_map.flatten()  # get 1D list of channels
         # remove NaN channels (no channels here, filler for rectangular map)
-        channels = channels[~np.isnan(channels)] 
+        channels = channels[~np.isnan(channels)].astype(int) 
         # remove duplicates, possible for hybrid arrays where macro channels
         # take the space of multiple micro channels
         channels = np.unique(channels)
         channels = np.sort(channels).astype(str).tolist()
 
         info = mne.create_info(channels, sfreq=fs, ch_types='ecog')
+        info['bads'] = [str(c) for c in bad_channels]
         raw = mne.io.RawArray(amplifier_data * factor, info)
         return raw
+
+    def _save_mne_raw(self, raw, fname):
+        save_path = self.out_dir / f'sub-{self.subject}' / fname
+        logger.info(f'Saving MNE Raw data to {save_path}...')
+        try:
+            raw.export(save_path)
+            logger.info('...MNE Raw data saved successfully.')
+            return True
+        except Exception as e:
+            logger.error(f'Error saving MNE Raw data: {e}')
+            print('Failed to save MNE Raw data. Error written to log.')
+            return False
+
+    def _save_rhd_misc_data(self, data, fname):
+        save_path = self.out_dir / f'sub-{self.subject}' / fname
+        logger.info(f'Saving RHD misc data to {save_path}...')
+        try:
+            np.save(save_path, data)
+            logger.info('...RHD misc data saved successfully.')
+            return True
+        except Exception as e:
+            logger.error(f'Error saving RHD misc data: {e}')
+            print('Failed to save RHD misc data. Error written to log.')
+            return False
 
     def _get_impedance_magnitudes(self, data):
         impedance_mag = np.array([
@@ -425,7 +470,8 @@ class rhdLoader:
         return impedance_mag
 
     def _get_high_impedance_channels(self, impedance, threshold=1e6):
-        return np.where(impedance > threshold)[0].tolist()
+        bad_channels = np.where(impedance > threshold)[0] + 1  # 1-indexed
+        return bad_channels.tolist()
 
     def _process_mfa_output(self):
         subj_dir = self.out_dir / f'sub-{self.subject}'
@@ -481,9 +527,14 @@ def main(data_dir, subject, fileIDs, array_type='None', task='lexical_repeat_int
 
 
 if __name__ == "__main__":
-    data_dir = r'C:\Users\zms14\Box\CoganLab\uECoG_Upload\S26_04_20_2021_Human_Intraop'
+    user_path = Path.home()
     # data_dir = None
-    subject = 'S26'
-    fileIDs = range(31, 43)
-    # fileIDs = None
-    main(data_dir, subject, fileIDs, array_type='128-strip', task='phoneme_sequencing')
+
+    # data_dir = user_path / r'Box\CoganLab\uECoG_Upload\S26_04_20_2021_Human_Intraop'
+    # fileIDs = range(31, 43)
+    # main(data_dir, subject, fileIDs, array_type='128-strip', task='phoneme_sequencing')
+    
+    data_dir = user_path / r'C:\Users\zms14\Box\CoganLab\uECoG_Upload\S78_08_20_2025\S78_IntraOp_250820_111305'
+    subject = 'S78'
+    fileIDs = None
+    main(data_dir, subject, fileIDs, array_type='256-grid', task='lexical_repeat_intraop')
