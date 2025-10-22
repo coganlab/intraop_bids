@@ -9,6 +9,7 @@ from scipy.signal import resample_poly, correlate, find_peaks
 import noisereduce as nr
 import matplotlib.pyplot as plt
 import mne
+import h5py
 
 from load_intan_rhd_format.load_intan_rhd_format import read_data
 
@@ -35,7 +36,8 @@ class rhdLoader:
 
         if array_type is None:
             arr_types = ['128-strip', '256-grid', '256-strip', 'hybrid-strip']
-            resp = input(f'Please specify array type {'/'.join(arr_types)}:')
+            types = '/'.join(arr_types)
+            resp = input(f'Please specify array type {types}:')
             if resp in arr_types:
                 array_type = resp
             else:
@@ -54,19 +56,20 @@ class rhdLoader:
         bad_channels = self._get_high_impedance_channels(all_data['impedance'])
         all_data['bad_channels'] = bad_channels
 
-        
-        # convert amplifier data to MNE Raw object
-        raw = self._convert_to_mne_raw(all_data['raw_data'],
-                                       all_data['fs'], all_data['bad_channels'])
-        # see if we can free up memory here
-        del all_data['raw_data'] 
-        del all_data['fs']
+        # save raw data as h5 file in output dir
+        _ = self._save_raw_data(all_data['raw_data'],
+                                all_data['fs'],
+                                all_data['bad_channels'],
+                                self.channel_map,
+                                f'sub-{self.subject}_raw.h5')
+
+        # # see if we can free up memory here
+        del all_data['raw_data']
         del all_data['bad_channels']
 
-        
-        # save raw data to output dir
-        _ = self._save_mne_raw(raw, f'sub-{self.subject}_raw.edf')
-        
+        # # save raw data to output dir
+        # _ = self._save_mne_raw(raw, f'sub-{self.subject}_raw.edf')
+
         # save misc rhd data as numpy files in output dir
         _ = self._save_rhd_misc_data(all_data['trigger'],
                                      f'sub-{self.subject}_trigger.npy')
@@ -74,6 +77,7 @@ class rhdLoader:
                                      f'sub-{self.subject}_mic.npy')
         _ = self._save_rhd_misc_data(all_data['impedance'],
                                      f'sub-{self.subject}_impedance.npy')
+        self.fs = all_data['fs']
 
         logger.info('...data loading complete.')
         return self
@@ -89,7 +93,11 @@ class rhdLoader:
                                     f'{self.rhd_dir}')
         trial_info = loadmat(trialInfo_path)['trialInfo'].squeeze()
 
-        mic_denoised = nr.reduce_noise(y=self.mic, sr=self.fs,
+        mic = np.load(self.out_dir / f'sub-{self.subject}' / ('sub-' +
+                      self.subject + '_mic.npy'))
+
+        fs = self._get_fs()
+        mic_denoised = nr.reduce_noise(y=mic, sr=fs,
                                        stationary=False, prop_decrease=0.9)
 
         stim_files = self._get_stim_dir().rglob('**/*.wav')
@@ -116,11 +124,13 @@ class rhdLoader:
             fs_stim, stim = wavfile.read(stim_path)
             stim = stim[:, 0] if stim.ndim > 1 else stim
             # Resample to fs of main audio
-            stim_resamp = resample_poly(stim, self.fs, fs_stim)
+            stim_resamp = resample_poly(stim, fs, fs_stim)
             stim_name_no_ext = Path(stim_name).stem
             stims[stim_name_no_ext] = stim_resamp
 
-        trig_times = self.detect_trigger_onsets(self.trigger, self.fs)
+        trigger = np.load(self.out_dir / f'sub-{self.subject}' / ('sub-' +
+                          self.subject + '_trigger.npy'))
+        trig_times = self.detect_trigger_onsets(trigger, fs)
 
         # === Process trials ===
         with open(self.out_dir / f'sub-{self.subject}' / 'cue_events.txt',
@@ -133,8 +143,8 @@ class rhdLoader:
                 on = trig_times[iTrial]
 
                 # Define cross-correlation search window
-                xcorr_start = int(max((on - xcorr_start_buffer) * self.fs, 0))
-                xcorr_end = int(min((on + xcorr_end_buffer) * self.fs,
+                xcorr_start = int(max((on - xcorr_start_buffer) * fs, 0))
+                xcorr_end = int(min((on + xcorr_end_buffer) * fs,
                                     len(mic_denoised)))
                 allblocks_win = mic_denoised[xcorr_start:xcorr_end]
 
@@ -144,15 +154,15 @@ class rhdLoader:
                 lags = np.arange(-len(curr_stim_aud) + 1, len(allblocks_win))
                 lag_idx = np.argmax(np.abs(xcorr_val))
                 l_offset = lags[lag_idx]
-                stim_onset = (xcorr_start + l_offset) / self.fs
+                stim_onset = (xcorr_start + l_offset) / fs
 
                 # Duration and offset
-                dur = len(curr_stim_aud) / self.fs
+                dur = len(curr_stim_aud) / fs
                 stim_offset = stim_onset + dur
 
                 fid_cue.write(f"{stim_onset:.6f}\t{stim_offset:.6f}\t"
                               f"{iTrial+1}_{curr_stim_name}\n")
-        logger.info('Successfully created cue events.txt')
+        logger.info('Successfully created cue_events.txt')
 
     @staticmethod
     def detect_trigger_onsets(trigger, fs,
@@ -299,14 +309,17 @@ class rhdLoader:
         shutil.copyfile(trialInfo_src, trialInfo_dst)
 
         # save microphone data as wav file in subject directory
+        mic = np.load(self.out_dir / f'sub-{self.subject}' / ('sub-' +
+                      self.subject + '_mic.npy'))
         mic_wav_path = self.out_dir / f'sub-{self.subject}' / 'allblocks.wav'
-        wavfile.write(mic_wav_path, int(self.fs), self.mic.astype(np.float32))
+        fs = self._get_fs()
+        wavfile.write(mic_wav_path, int(fs), mic.astype(np.float32))
 
         # run MFA (assumes MFA is cloned to
         # Box/CoganLab/Data/Micro/BIDS_processing/MFA_pipeline)
         mfa_cmd = ['python',
-                   Path(self._get_out_dir() / 'MFA_pipeline' /
-                        'mfa_pipeline.py'),
+                   str(Path(self._get_out_dir() / 'MFA_pipeline' /
+                       'mfa_pipeline.py')),
                    'task=' + task_name,
                    'patient_dir=' + str(self.out_dir),
                    'patients=sub-' + self.subject,
@@ -314,8 +327,8 @@ class rhdLoader:
                    ]
         try:
             logger.info(f'Running MFA for subject {self.subject}...')
-            subprocess.run(mfa_cmd, check=True, shell=True)
-            logger.info('MFA processing complete.')
+            subprocess.run(mfa_cmd, check=True)
+            logger.info('...MFA processing complete.')
             self._process_mfa_output()
         except subprocess.CalledProcessError as e:
             logger.error(f'Error running MFA: {e}')
@@ -369,7 +382,7 @@ class rhdLoader:
         return chan_map
 
     def _build_full_rhd_data(self, rhd_files):
-        n_chans = np.nanmax(self.channel_map).astype(int) # 1-indexed chans
+        n_chans = np.nanmax(self.channel_map).astype(int)  # 1-indexed chans
         amplifier_data_all = np.empty((n_chans, 0), dtype=np.float32)
         trigger_all = np.empty((0,), dtype=np.float32)
         mic_all = np.empty((0,), dtype=np.float32)
@@ -427,11 +440,10 @@ class rhdLoader:
                                           " not implemented yet")
         channels = self.channel_map.flatten()  # get 1D list of channels
         # remove NaN channels (no channels here, filler for rectangular map)
-        channels = channels[~np.isnan(channels)].astype(int) 
+        channels = channels[~np.isnan(channels)].astype(int)
         # remove duplicates, possible for hybrid arrays where macro channels
         # take the space of multiple micro channels
-        channels = np.unique(channels)
-        channels = np.sort(channels).astype(str).tolist()
+        channels = np.unique(channels).astype(str).tolist()
 
         info = mne.create_info(channels, sfreq=fs, ch_types='ecog')
         info['bads'] = [str(c) for c in bad_channels]
@@ -448,6 +460,22 @@ class rhdLoader:
         except Exception as e:
             logger.error(f'Error saving MNE Raw data: {e}')
             print('Failed to save MNE Raw data. Error written to log.')
+            return False
+
+    def _save_raw_data(self, data, fs, bad_channels, channel_map, fname):
+        save_path = self.out_dir / f'sub-{self.subject}' / fname
+        logger.info(f'Saving raw data to {save_path}...')
+        try:
+            with h5py.File(save_path, 'w') as hf:
+                hf.create_dataset('data', data=data)
+                hf.create_dataset('fs', data=fs)
+                hf.create_dataset('bad_channels', data=bad_channels)
+                hf.create_dataset('channel_map', data=channel_map)
+            logger.info('...raw data saved successfully.')
+            return True
+        except Exception as e:
+            logger.error(f'Error saving raw data: {e}')
+            print('Failed to save raw data. Error written to log.')
             return False
 
     def _save_rhd_misc_data(self, data, fname):
@@ -472,6 +500,20 @@ class rhdLoader:
     def _get_high_impedance_channels(self, impedance, threshold=1e6):
         bad_channels = np.where(impedance > threshold)[0] + 1  # 1-indexed
         return bad_channels.tolist()
+
+    def _get_fs(self):
+        if hasattr(self, 'fs'):
+            return self.fs
+        elif (self.out_dir / f'sub-{self.subject}' /
+              f'sub-{self.subject}_raw.edf').exists():
+            raw = mne.io.read_raw_edf(
+                self.out_dir / f'sub-{self.subject}' /
+                f'sub-{self.subject}_raw.edf', preload=False)
+            self.fs = raw.info['sfreq']
+            return raw.info['sfreq']
+        else:
+            raise ValueError('Sampling frequency not found. Please load data'
+                             ' first to determine fs.')
 
     def _process_mfa_output(self):
         subj_dir = self.out_dir / f'sub-{self.subject}'
@@ -516,13 +558,14 @@ class rhdLoader:
         logger.info(f'Subject directory set to: {subj_dir}')
 
 
-def main(data_dir, subject, fileIDs, array_type='None', task='lexical_repeat_intraop'):
+def main(data_dir, subject, fileIDs, array_type='None',
+         task='lexical_repeat_intraop'):
     loader = rhdLoader(subject, data_dir, fileIDs=fileIDs,
                        array_type=array_type)
     loader.load_data()
     loader.make_cue_events()
     loader.run_mfa(task_name=task)
-    loader.create_trials_dict()
+    print(loader.create_trials_dict())
     print('RHD data loaded successfully.')
 
 
@@ -530,11 +573,17 @@ if __name__ == "__main__":
     user_path = Path.home()
     # data_dir = None
 
-    # data_dir = user_path / r'Box\CoganLab\uECoG_Upload\S26_04_20_2021_Human_Intraop'
-    # fileIDs = range(31, 43)
-    # main(data_dir, subject, fileIDs, array_type='128-strip', task='phoneme_sequencing')
-    
-    data_dir = user_path / r'C:\Users\zms14\Box\CoganLab\uECoG_Upload\S78_08_20_2025\S78_IntraOp_250820_111305'
+    data_dir = (user_path /
+                r'Box\CoganLab\uECoG_Upload\S26_04_20_2021_Human_Intraop')
+    subject = 'S26'
+    fileIDs = range(31, 43)
+    main(data_dir, subject, fileIDs, array_type='128-strip',
+         task='phoneme_sequencing')
+
+    data_dir = (user_path /
+                r'Box\CoganLab\uECoG_Upload\S78_08_20_2025'
+                r'\S78_IntraOp_250820_111305')
     subject = 'S78'
     fileIDs = None
-    main(data_dir, subject, fileIDs, array_type='256-grid', task='lexical_repeat_intraop')
+    main(data_dir, subject, fileIDs, array_type='256-grid',
+         task='lexical_repeat_intraop')
