@@ -1,3 +1,6 @@
+
+from __future__ import annotations
+
 from pathlib import Path
 from tkinter import filedialog
 import logging
@@ -10,6 +13,7 @@ import noisereduce as nr
 import matplotlib.pyplot as plt
 import mne
 import h5py
+from typing import Any, Dict, Iterable, List, Optional, Sequence, Union
 
 from load_intan_rhd_format.load_intan_rhd_format import read_data
 
@@ -20,8 +24,30 @@ logger = logging.getLogger(__name__)
 
 class rhdLoader:
 
-    def __init__(self, subject, rhd_dir=None, out_dir=None, fileIDs=None,
-                 array_type='None'):
+    def __init__(self,
+                 subject: str,
+                 rhd_dir: Optional[Union[str, Path]] = None,
+                 out_dir: Optional[Union[str, Path]] = None,
+                 fileIDs: Optional[Iterable[int]] = None,
+                 array_type: Optional[str] = None) -> None:
+        """Initialize an RHD data loader.
+
+        Args:
+            subject: Subject identifier string.
+            rhd_dir: Path or string pointing to directory containing RHD files.
+                If None, a file dialog will be opened to select a directory.
+            out_dir: Output base directory where processed files will be
+                written. If None, the default BIDS processing path is used.
+            fileIDs: Optional iterable of integer indices specifying which
+                RHD files to include (1-indexed by order). If None all files
+                are used.
+            array_type: Name of the electrode array channel map to use
+                (e.g. '128-strip', '256-grid', '256-strip', or 'hybrid-strip').
+                Default is None to prompt the user to select an array type.
+
+        Returns:
+            None
+        """
         self.subject = subject
         if out_dir is None:
             out_dir = self._get_out_dir()
@@ -45,7 +71,17 @@ class rhdLoader:
                                  'not be implemented yet.')
         self.channel_map = self._get_channel_map(array_type)
 
-    def load_data(self):
+    def load_data(self) -> "rhdLoader":
+        """Load RHD data for the initialized subject and save artifacts.
+
+        This function finds the subject RHD files, reads them, computes bad
+        channels based on impedance, saves the raw data as an HDF5 file, and
+        writes additional miscellaneous arrays (trigger, mic, impedance) as
+        NumPy files in the subject output directory.
+
+        Returns:
+            The loader instance (self) to allow method chaining.
+        """
         logger.info(f'Loading RHD data for subject {self.subject} '
                     f'from directory: {self.rhd_dir}...')
         rhd_files = self._get_subj_files()
@@ -82,7 +118,19 @@ class rhdLoader:
         logger.info('...data loading complete.')
         return self
 
-    def make_cue_events(self):
+    def make_cue_events(self) -> None:
+        """Create cue event timings by cross-correlating stimulus audio.
+
+        This method loads trial information, denoises the microphone trace,
+        loads stimulus WAV files referenced by the trial information, detects
+        trigger onsets, cross-correlates each stimulus with the mic trace to
+        find precise stimulus onsets/offsets, and writes a
+        `cue_events.txt` file in the subject output directory.
+
+        Raises:
+            FileNotFoundError: If the trialInfo.mat file is not found in the
+                RHD data directory.
+        """
         xcorr_start_buffer = 0.5  # seconds
         xcorr_end_buffer = 0.7  # seconds
 
@@ -165,40 +213,38 @@ class rhdLoader:
         logger.info('Successfully created cue_events.txt')
 
     @staticmethod
-    def detect_trigger_onsets(trigger, fs,
-                              min_dist_s=3,
-                              threshold_factor=5.0,
-                              task_start_buffer_s=3.0,
-                              peak_rejection_factor=7.0,
-                              interactive=True):
+    def detect_trigger_onsets(trigger: np.ndarray,
+                              fs: float,
+                              min_dist_s: float = 3.0,
+                              threshold_factor: float = 5.0,
+                              task_start_buffer_s: float = 3.0,
+                              peak_rejection_factor: float = 7.0,
+                              interactive: bool = True) -> np.ndarray:
         """
-        Automatically detect trial triggers from a photodiode trace.
+        Automatically detect trial trigger onsets from a photodiode trace.
 
-        Parameters
-        ----------
-        trigger : np.ndarray
-            Trigger voltage trace.
-        fs : float
-            Sampling rate (Hz).
-        min_dist_s : float
-            Minimum distance between detected trials (s).
-        start_threshold_factor : float
-            Std multiplier to find the large 'start of task' pulse.
-        trial_threshold_factor : float
-            Std multiplier for normal trial detection threshold.
-        post_buffer_s : float
-            How long after last detected trial to ignore (to skip teardown).
-        interactive : bool
-            If True, shows results and allows user override.
+        The function thresholds the trigger trace to find a wide "task
+        start" pulse and then detects individual trial peaks after that
+        time. A figure is plotted and the user may optionally override
+        detection parameters interactively.
 
-        Returns
-        -------
-        trial_onsets : np.ndarray
-            Times (s) of detected trial triggers.
-        task_start_time : float
-            Time (s) of detected task start.
-        threshold : float
-            Threshold used for trial detection.
+        Args:
+            trigger: 1D numpy array containing the photodiode/trigger trace
+                voltage samples.
+            fs: Sampling rate of the trigger trace in Hz.
+            min_dist_s: Minimum allowed distance between detected trials in
+                seconds.
+            threshold_factor: Multiplier of the post-task standard deviation to
+                set the trial detection threshold.
+            task_start_buffer_s: Seconds to offset the detected task start
+                peak to ensure the search window excludes the wide pulse.
+            peak_rejection_factor: Multiplier of peak-height SD used to reject
+                amplitude outliers.
+            interactive: If True, show plots and permit manual overrides via
+                the console.
+
+        Returns:
+            A 1D numpy array of detected trial onset times in seconds.
         """
 
         trig = np.asarray(trigger, dtype=float)
@@ -302,7 +348,21 @@ class rhdLoader:
 
         return trial_onsets
 
-    def run_mfa(self, task_name='phoneme_sequencing'):
+    def run_mfa(self, task_name: str = 'phoneme_sequencing') -> bool:
+        """Run the Montreal Forced Aligner (MFA) pipeline for this subject.
+
+        This method copies trialInfo.mat to the subject output directory,
+        writes the microphone trace to a WAV file, then invokes the external
+        MFA pipeline script. If MFA completes successfully, MFA-produced
+        token files are moved into the subject directory.
+
+        Args:
+            task_name: Name of the MFA task configuration to run (keys in
+                the `MFA_pipeline/conf/task` folder).
+
+        Returns:
+            True if MFA ran and processed successfully, False otherwise.
+        """
         # copy trialInfo to subject directory
         trialInfo_src = self.rhd_dir / 'trialInfo.mat'
         trialInfo_dst = self.out_dir / f'sub-{self.subject}' / 'trialInfo.mat'
@@ -335,7 +395,18 @@ class rhdLoader:
             return False
         return True
 
-    def create_trials_dict(self):
+    def create_trials_dict(self) -> Dict[str, List[Any]]:
+        """Create a trials dictionary from MFA token-level annotation files.
+
+        Reads the token-level word timing files produced by MFA for stimulus
+        and response channels and assembles a dictionary with lists for
+        stimulus words and onset/offset times.
+
+        Returns:
+            A dictionary with keys: 'stimulus', 'auditory_onset',
+            'auditory_offset', 'response_onset', 'response_offset'. Each
+            value is a list corresponding to trials in order.
+        """
         trials_dict = {
             'stimulus': [],
             'auditory_onset': [],
@@ -344,9 +415,13 @@ class rhdLoader:
             'response_offset': [],
         }
         # open MFA token-level annotations to read in parallel
-        fname_stim = self.out_dir / f'sub-{self.subject}' / 'mfa_stim_words.txt'
+        fname_stim = (
+            self.out_dir / f'sub-{self.subject}' / 'mfa_stim_words.txt'
+        )
         f_stim = open(fname_stim, 'r')
-        fname_resp = self.out_dir / f'sub-{self.subject}' / 'mfa_resp_words.txt'
+        fname_resp = (
+            self.out_dir / f'sub-{self.subject}' / 'mfa_resp_words.txt'
+        )
         f_resp = open(fname_resp, 'r')
 
         # save timings for each trial to trials_dict
@@ -363,7 +438,14 @@ class rhdLoader:
         f_resp.close()
         return trials_dict
 
-    def _get_subj_files(self):
+    def _get_subj_files(self) -> List[Path]:
+        """Return a sorted list of RHD files for the subject.
+
+        Returns:
+            A list of Path objects matching the subject pattern in the RHD
+            directory. If `self.fileIDs` is provided, the returned list will
+            be filtered to those indices (1-indexed by order).
+        """
         pattern = f'{self.subject}*.rhd'
         rhd_files = sorted(self.rhd_dir.glob(pattern))
         # only keep files selected by numerical IDs corresponding to order
@@ -374,14 +456,35 @@ class rhdLoader:
         logger.info(f'Found files: {[f.name for f in rhd_files]}')
         return rhd_files
 
-    def _get_channel_map(self, array_type):
+    def _get_channel_map(self, array_type: str) -> np.ndarray:
+        """Load a channel map .mat file for the specified array type.
+
+        Args:
+            array_type: Name of the array channel map file (without .mat).
+
+        Returns:
+            A numpy array containing the channel map loaded from the .mat
+            file.
+        """
         # load channel map based on array type
         chan_map_dir = Path(__file__).parent / 'channel_maps'
         chan_map_fname = chan_map_dir / f'{array_type}.mat'
         chan_map = loadmat(chan_map_fname)['chanMap'].squeeze()
         return chan_map
 
-    def _build_full_rhd_data(self, rhd_files):
+    def _build_full_rhd_data(
+        self, rhd_files: Sequence[Path]
+    ) -> Dict[str, Any]:
+        """Read and concatenate data from multiple RHD files.
+
+        Args:
+            rhd_files: Sequence of Path objects pointing to .rhd files for the
+                subject (typically each file is ~1 minute of data).
+
+        Returns:
+            A dictionary with keys: 'raw_data' (2D numpy array channels x
+            samples), 'trigger', 'mic', 'impedance' (1D array), and 'fs'.
+        """
         n_chans = np.nanmax(self.channel_map).astype(int)  # 1-indexed chans
         amplifier_data_all = np.empty((n_chans, 0), dtype=np.float32)
         trigger_all = np.empty((0,), dtype=np.float32)
@@ -403,12 +506,18 @@ class rhdLoader:
                 data['board_adc_data'][1, :].astype(np.float32))
             impedance_all = np.append(
                 impedance_all,
-                self._get_impedance_magnitudes(data)[np.newaxis, :].astype(np.float32),
-                axis=0)
+                self._get_impedance_magnitudes(data)[
+                    np.newaxis, :].astype(np.float32),
+                axis=0,
+            )
 
             logger.info(f'      Data shape: {data["amplifier_data"].shape}')
-            logger.info(f'      Trigger shape: {data["board_adc_data"][0, :].shape}')
-            logger.info(f'      Mic shape: {data["board_adc_data"][1, :].shape}')
+            logger.info(
+                f'      Trigger shape: {data["board_adc_data"][0, :].shape}'
+            )
+            logger.info(
+                f'      Mic shape: {data["board_adc_data"][1, :].shape}'
+            )
             logger.info(f'      Impedance shape: '
                         f'{impedance_all[-1].shape}')
 
@@ -424,8 +533,25 @@ class rhdLoader:
         }
         return full_data
 
-    def _convert_to_mne_raw(self, amplifier_data, fs, bad_channels,
-                            units='uV'):
+    def _convert_to_mne_raw(self,
+                            amplifier_data: np.ndarray,
+                            fs: float,
+                            bad_channels: Sequence[int],
+                            units: str = 'uV') -> mne.io.BaseRaw:
+        """Convert raw amplifier data to an MNE Raw object.
+
+        Args:
+            amplifier_data: 2D numpy array of shape (n_channels, n_samples)
+                containing amplifier voltage traces.
+            fs: Sampling frequency in Hz.
+            bad_channels: Sequence of 1-indexed channel numbers to mark as
+                bad in the returned Raw object.
+            units: Unit string for input data. Supported units: 'V', 'mV',
+                'uV', 'nV'. The data will be scaled accordingly.
+
+        Returns:
+            An MNE Raw object containing the converted data and channel info.
+        """
         match units:
             case "V":
                 factor = 1
@@ -450,7 +576,18 @@ class rhdLoader:
         raw = mne.io.RawArray(amplifier_data * factor, info)
         return raw
 
-    def _save_mne_raw(self, raw, fname):
+    def _save_mne_raw(
+        self, raw: mne.io.BaseRaw, fname: Union[str, Path]
+    ) -> bool:
+        """Export an MNE Raw object to a file.
+
+        Args:
+            raw: MNE Raw object to export.
+            fname: Destination filename (string or Path).
+
+        Returns:
+            True if saving succeeded, False if an exception occurred.
+        """
         save_path = self.out_dir / f'sub-{self.subject}' / fname
         logger.info(f'Saving MNE Raw data to {save_path}...')
         try:
@@ -462,7 +599,25 @@ class rhdLoader:
             print('Failed to save MNE Raw data. Error written to log.')
             return False
 
-    def _save_raw_data(self, data, fs, bad_channels, channel_map, fname):
+    def _save_raw_data(self,
+                       data: np.ndarray,
+                       fs: float,
+                       bad_channels: Sequence[int],
+                       channel_map: np.ndarray,
+                       fname: Union[str, Path]) -> bool:
+        """Save raw data and metadata to an HDF5 file.
+
+        Args:
+            data: 2D numpy array of raw amplifier data (channels x samples).
+            fs: Sampling frequency.
+            bad_channels: Sequence of channel indices marked as bad.
+            channel_map: Channel map array saved alongside the data.
+            fname: Filename for the HDF5 container to create in the subject
+                directory.
+
+        Returns:
+            True if the HDF5 file was written successfully, False otherwise.
+        """
         save_path = self.out_dir / f'sub-{self.subject}' / fname
         logger.info(f'Saving raw data to {save_path}...')
         try:
@@ -478,7 +633,18 @@ class rhdLoader:
             print('Failed to save raw data. Error written to log.')
             return False
 
-    def _save_rhd_misc_data(self, data, fname):
+    def _save_rhd_misc_data(
+        self, data: np.ndarray, fname: Union[str, Path]
+    ) -> bool:
+        """Save miscellaneous RHD arrays as numpy .npy files.
+
+        Args:
+            data: 1D or 2D numpy array to save.
+            fname: Filename under the subject output directory.
+
+        Returns:
+            True on success, False on failure.
+        """
         save_path = self.out_dir / f'sub-{self.subject}' / fname
         logger.info(f'Saving RHD misc data to {save_path}...')
         try:
@@ -490,18 +656,51 @@ class rhdLoader:
             print('Failed to save RHD misc data. Error written to log.')
             return False
 
-    def _get_impedance_magnitudes(self, data):
+    def _get_impedance_magnitudes(self, data: Dict[str, Any]) -> np.ndarray:
+        """Extract impedance magnitude values from raw RHD metadata.
+
+        Args:
+            data: Dictionary-like structure returned by the RHD reader which
+                contains an 'amplifier_channels' entry.
+
+        Returns:
+            1D numpy array of impedance magnitudes (one per channel).
+        """
         impedance_mag = np.array([
             data['amplifier_channels'][iChan]['electrode_impedance_magnitude']
             for iChan in range(len(data['amplifier_channels']))
         ])
         return impedance_mag
 
-    def _get_high_impedance_channels(self, impedance, threshold=1e6):
+    def _get_high_impedance_channels(
+        self, impedance: np.ndarray, threshold: float = 1e6
+    ) -> List[int]:
+        """Return list of 1-indexed channels with impedance above threshold.
+
+        Args:
+            impedance: 1D array of impedance magnitudes.
+            threshold: Threshold above which a channel is considered bad.
+
+        Returns:
+            List of 1-indexed channel numbers whose impedance exceeds the
+            threshold.
+        """
         bad_channels = np.where(impedance > threshold)[0] + 1  # 1-indexed
         return bad_channels.tolist()
 
-    def _get_fs(self):
+    def _get_fs(self) -> float:
+        """Return the sampling frequency for the stored or saved data.
+
+        If `self.fs` is already set it is returned. Otherwise the method
+        attempts to read a saved EDF file in the subject directory to infer
+        the sampling rate.
+
+        Returns:
+            Sampling frequency in Hz.
+
+        Raises:
+            ValueError: If sampling frequency cannot be determined.
+        """
         if hasattr(self, 'fs'):
             return self.fs
         elif (self.out_dir / f'sub-{self.subject}' /
@@ -515,7 +714,12 @@ class rhdLoader:
             raise ValueError('Sampling frequency not found. Please load data'
                              ' first to determine fs.')
 
-    def _process_mfa_output(self):
+    def _process_mfa_output(self) -> None:
+        """Move MFA output token files from MFA subdirectory into subject dir.
+
+        The function attempts to move a small set of known MFA output files
+        (stim/resp words and phones). Missing files are logged as warnings.
+        """
         subj_dir = self.out_dir / f'sub-{self.subject}'
         mfa_dir = subj_dir / 'mfa'
         files_to_move = ['mfa_stim_words.txt', 'mfa_stim_phones.txt',
@@ -529,18 +733,35 @@ class rhdLoader:
             else:
                 logger.warning(f'{file_name} not found in MFA directory.')
 
-    def _get_out_dir(self):
+    def _get_out_dir(self) -> Path:
+        """Return the default BIDS processing output directory under Box.
+
+        The location is determined relative to the current user's home
+        directory. This method does not validate that the returned path
+        actually exists beyond being a Path object.
+        """
         # get path to BIDS processing folder on Box
         user_home = Path.home()
         box_dir = user_home / r'Box\CoganLab\Data\Micro\BIDS_processing'
         return box_dir
 
-    def _get_stim_dir(self):
+    def _get_stim_dir(self) -> Path:
+        """Return the default stimulus directory under the user's Box folder.
+
+        Returns:
+            A Path pointing to the stimulus folder used to find WAV files
+            referenced by trial information.
+        """
         user_home = Path.home()
         stim_dir = user_home / r'Box\CoganLab\ECoG_Task_Data\Stim'
         return stim_dir
 
-    def _make_subj_dir(self, base_dir):
+    def _make_subj_dir(self, base_dir: Union[str, Path]) -> None:
+        """Create the subject directory and attach a file logging handler.
+
+        Args:
+            base_dir: Base directory under which to create the subject folder.
+        """
         # create directiry for subject if it doesn't exist
         subj_dir = Path(base_dir) / f'sub-{self.subject}'
         subj_dir.mkdir(parents=True, exist_ok=True)
