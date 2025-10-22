@@ -20,6 +20,8 @@ from load_intan_rhd_format.load_intan_rhd_format import read_data
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+DATA_TYPE = np.float64
+
 
 class rhdLoader:
 
@@ -372,7 +374,7 @@ class rhdLoader:
                       self.subject + '_mic.npy'))
         mic_wav_path = self.out_dir / f'sub-{self.subject}' / 'allblocks.wav'
         fs = self._get_fs()
-        wavfile.write(mic_wav_path, int(fs), mic.astype(np.float32))
+        wavfile.write(mic_wav_path, int(fs), mic.astype(DATA_TYPE))
 
         # run MFA (assumes MFA is cloned to
         # Box/CoganLab/Data/Micro/BIDS_processing/MFA_pipeline)
@@ -485,28 +487,28 @@ class rhdLoader:
             samples), 'trigger', 'mic', 'impedance' (1D array), and 'fs'.
         """
         n_chans = np.nanmax(self.channel_map).astype(int)  # 1-indexed chans
-        amplifier_data_all = np.empty((n_chans, 0), dtype=np.float32)
-        trigger_all = np.empty((0,), dtype=np.float32)
-        mic_all = np.empty((0,), dtype=np.float32)
-        impedance_all = np.empty((0, n_chans), dtype=np.float32)
+        amplifier_data_all = np.empty((n_chans, 0), dtype=DATA_TYPE)
+        trigger_all = np.empty((0,), dtype=DATA_TYPE)
+        mic_all = np.empty((0,), dtype=DATA_TYPE)
+        impedance_all = np.empty((0, n_chans), dtype=DATA_TYPE)
         # store data from each RHD file (corresponds to 1 min of data)
         for rhd_file in rhd_files:
             logger.info(f'Loading RHD file: {rhd_file.name}')
             data = read_data(rhd_file)
             amplifier_data_all = np.append(
                 amplifier_data_all,
-                data['amplifier_data'].astype(np.float32),
+                data['amplifier_data'].astype(DATA_TYPE),
                 axis=1)
             trigger_all = np.append(
                 trigger_all,
-                data['board_adc_data'][0, :].astype(np.float32))
+                data['board_adc_data'][0, :].astype(DATA_TYPE))
             mic_all = np.append(
                 mic_all,
-                data['board_adc_data'][1, :].astype(np.float32))
+                data['board_adc_data'][1, :].astype(DATA_TYPE))
             impedance_all = np.append(
                 impedance_all,
                 self._get_impedance_magnitudes(data)[
-                    np.newaxis, :].astype(np.float32),
+                    np.newaxis, :].astype(DATA_TYPE),
                 axis=0,
             )
 
@@ -782,7 +784,7 @@ def main(data_dir, subject, fileIDs, array_type='None',
          task='lexical_repeat_intraop'):
     loader = rhdLoader(subject, data_dir, fileIDs=fileIDs,
                        array_type=array_type)
-    loader.load_data()
+    # loader.load_data()
     loader.make_cue_events()
     loader.run_mfa(task_name=task)
     print(loader.create_trials_dict())
@@ -793,17 +795,24 @@ if __name__ == "__main__":
     user_path = Path.home()
     # data_dir = None
 
-    data_dir = (user_path /
-                r'Box\CoganLab\uECoG_Upload\S26_04_20_2021_Human_Intraop')
-    subject = 'S26'
-    fileIDs = range(31, 43)
-    main(data_dir, subject, fileIDs, array_type='128-strip',
-         task='phoneme_sequencing')
+    # data_dir = (user_path /
+    #             r'Box\CoganLab\uECoG_Upload\S26_04_20_2021_Human_Intraop')
+    # subject = 'S26'
+    # fileIDs = range(31, 43)
+    # main(data_dir, subject, fileIDs, array_type='128-strip',
+    #      task='phoneme_sequencing')
 
+    # data_dir = (user_path /
+    #             r'Box\CoganLab\uECoG_Upload\S78_08_20_2025'
+    #             r'\S78_IntraOp_250820_111305')
+    # subject = 'S78'
+    # fileIDs = None
+    # main(data_dir, subject, fileIDs, array_type='256-grid',
+    #      task='lexical_repeat_intraop')
     data_dir = (user_path /
-                r'Box\CoganLab\uECoG_Upload\S78_08_20_2025'
-                r'\S78_IntraOp_250820_111305')
-    subject = 'S78'
+                r'Box\CoganLab\uECoG_Upload\S73_03_18_2025'
+                r'\S73_V1_250318_120342')
+    subject = 'S73'
     fileIDs = None
-    main(data_dir, subject, fileIDs, array_type='256-grid',
+    main(data_dir, subject, fileIDs, array_type='256-strip',
          task='lexical_repeat_intraop')
