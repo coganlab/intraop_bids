@@ -384,7 +384,6 @@ class rhdLoader:
                    'task=' + task_name,
                    'patient_dir=' + str(self.out_dir),
                    'patients=sub-' + self.subject,
-                   'debug_mode=True',
                    ]
         try:
             logger.info(f'Running MFA for subject {self.subject}...')
@@ -705,6 +704,12 @@ class rhdLoader:
         if hasattr(self, 'fs'):
             return self.fs
         elif (self.out_dir / f'sub-{self.subject}' /
+              f'sub-{self.subject}_raw.h5').exists():
+            with h5py.File(self.out_dir / f'sub-{self.subject}' /
+                           f'sub-{self.subject}_raw.h5', 'r') as hf:
+                self.fs = hf['fs'][()]
+            return self.fs
+        elif (self.out_dir / f'sub-{self.subject}' /
               f'sub-{self.subject}_raw.edf').exists():
             raw = mne.io.read_raw_edf(
                 self.out_dir / f'sub-{self.subject}' /
@@ -809,6 +814,7 @@ if __name__ == "__main__":
     # fileIDs = None
     # main(data_dir, subject, fileIDs, array_type='256-grid',
     #      task='lexical_repeat_intraop')
+
     data_dir = (user_path /
                 r'Box\CoganLab\uECoG_Upload\S73_03_18_2025'
                 r'\S73_V1_250318_120342')
