@@ -789,7 +789,7 @@ def main(data_dir, subject, fileIDs, array_type='None',
          task='lexical_repeat_intraop'):
     loader = rhdLoader(subject, data_dir, fileIDs=fileIDs,
                        array_type=array_type)
-    # loader.load_data()
+    loader.load_data()
     loader.make_cue_events()
     loader.run_mfa(task_name=task)
     print(loader.create_trials_dict())
@@ -815,10 +815,18 @@ if __name__ == "__main__":
     # main(data_dir, subject, fileIDs, array_type='256-grid',
     #      task='lexical_repeat_intraop')
 
+    # data_dir = (user_path /
+    #             r'Box\CoganLab\uECoG_Upload\S73_03_18_2025'
+    #             r'\S73_V1_250318_120342')
+    # subject = 'S73'
+    # fileIDs = None
+    # main(data_dir, subject, fileIDs, array_type='256-strip',
+    #      task='lexical_repeat_intraop')
+
     data_dir = (user_path /
-                r'Box\CoganLab\uECoG_Upload\S73_03_18_2025'
-                r'\S73_V1_250318_120342')
-    subject = 'S73'
+                r'C:\Users\zms14\Box\CoganLab\uECoG_Upload\S57_12_19_2023'
+                r'\S57_Recording_231219_113044')
+    subject = 'S57'
     fileIDs = None
-    main(data_dir, subject, fileIDs, array_type='256-strip',
-         task='lexical_repeat_intraop')
+    main(data_dir, subject, fileIDs, array_type='hybrid-strip',
+         task='phoneme_sequencing')
