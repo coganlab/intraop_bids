@@ -30,16 +30,10 @@ from pathlib import Path
 from typing import Optional, Union
 from mne_bids import BIDSPath, write_raw_bids, write_anat
 import numpy as np
-from loaders import (
-    find_subject_files,
-    load_ieeg_data,
-    load_experiment_info,
-    load_event_data,
-    load_audio_data,
-)
-from config import (
-    DEFAULT_EVENT_PROCESSING,
-)
+import h5py
+import os
+import mne
+
 
 class BIDSConverter:
     """
@@ -59,7 +53,6 @@ class BIDSConverter:
         task: str,
         source_path: Union[str, Path],
         bids_root: Optional[Union[str, Path]] = None,
-        audio_path: Optional[Union[str, Path]] = None,
         recon_path: Optional[Union[str, Path]] = None,
     ):
         """
@@ -71,7 +64,6 @@ class BIDSConverter:
         - source_path: Root directory containing the source data to convert.
         - bids_root: Root directory for the output BIDS dataset. If None, must
           be provided later to `convert_to_bids()`.
-        - audio_path: Optional directory containing microphone audio files.
         - recon_path: Optional parent directory containing anatomical data
           (e.g., `ECoG_Recon/<sub>/...`).
 
@@ -82,7 +74,6 @@ class BIDSConverter:
         self.subject = subject
         self.task = task
         self.source_path = Path(source_path)
-        self.audio_path = Path(audio_path)
         self.recon_path = Path(recon_path)
         self.bids_root = Path(bids_root)
 
@@ -92,43 +83,46 @@ class BIDSConverter:
         self.events = None
         self.bids_path = None
 
-    def load_data(self):
+
+    def _make_raw_object(
+        self,
+    ):
         """
-        Load experiment metadata, iEEG raw, events, and optional audio.
-
-        Flow
-        - Discover subject-specific file paths via `find_subject_files()`.
-        - Load experiment metadata (`load_experiment_info()`).
-        - Load iEEG `mne.io.Raw` (`load_ieeg_data()`), using metadata as needed.
-        - Load trial/event structures (`load_event_data()`).
-        - If `audio_path` is provided, find WAV directory and `load_audio_data()`.
-
-        Returns
-        - self: Enables method chaining.
-
-        Raises
-        - FileNotFoundError: If required files are missing.
-        - ValueError: If loader functions encounter malformed inputs.
+        Make a raw object from the raw data.
         """
-        # Find all required files
-        files = find_subject_files(self.source_path, self.subject)
 
-        # Load experiment metadata
-        self.experiment_info = load_experiment_info(files['experiment_mat'])
+        raw_path = os.path.join(self.source_path,
+                                f'sub-{self.subject}',
+                                f'sub-{self.subject}_raw.h5')
+        raw = h5py.File(raw_path, 'r')
 
-        # Load iEEG data
-        self.raw = load_ieeg_data(files['ieeg_dat'], self.experiment_info)
+        raw_data = raw['data'][()]
+        self.fs = raw['fs'][()]
+        channel_map = raw['channel_map'][()]
 
-        # Load events
-        self.events = load_event_data(files['trials_mat'])
+        channel_names = [f'{i+1}' for i in range(len(raw_data))]
+        info = mne.create_info(
+            ch_names=channel_names,
+            sfreq=self.fs,
+            ch_types='seeg'
+        )
+        info['bads'] = [str(ch) for ch in raw['bad_channels'][()]]
+        # make a raw object
+        raw.close()
+        # release raw_data from memory
+        raw = mne.io.RawArray(
+            data = raw_data,
+            info = info,
+        )
+        del raw_data
+        import gc; gc.collect()
 
-        if self.audio_path is not None:
-            wav_dir = find_subject_files(self.source_path, self.subject, self.audio_path)['audio_wav']
-            self.audio_files, self.audio_fs = load_audio_data(wav_dir)
+        return raw
 
-        return self
 
-    def update_raw_object(self):
+    def update_raw_object(self,
+                          events,
+                          event_id):
         """
         Update the `raw` object with processed events and ensure montage.
 
@@ -140,7 +134,17 @@ class BIDSConverter:
         Returns
         - mne.io.Raw: The updated raw instance.
         """
-        self.events, self.event_id = self.handling_event()
+
+        sfreq = float(self.raw.info['sfreq'])
+
+        ann = mne.annotations_from_events(
+            events=events,
+            event_desc=event_id,
+            sfreq=sfreq,
+            orig_time=self.raw.info.get('meas_date')
+        )
+
+        self.raw.set_annotations(ann)
 
         # make custom montage if no montage is found in the raw object
         if self.raw.info.get_montage() is None:
@@ -337,35 +341,60 @@ class BIDSConverter:
         except Exception as e:
             raise Exception(f"Error processing events: {str(e)}")
 
-    def create_bids_directory(self) -> Path:
-        """
-        Create the top-level BIDS directory structure (session-less).
 
-        Returns
-        - pathlib.Path: `sub-<label>` directory path within `bids_root`.
+    def _parse_events(self, sfreq):
 
-        Raises
-        - ValueError: If `bids_root` or `subject` is unset.
-        """
-        if self.bids_root is None:
-            raise ValueError("bids_root must be set to create BIDS directory structure")
-        if not hasattr(self, 'subject'):
-            raise ValueError("subject must be set")
+        # load word level stim and response txt file
+        stim_file = os.path.join(
+            self.source_path,
+            f'sub-{self.subject}',
+            "mfa_stim_words.txt"
+        )
+        resp_file = os.path.join(
+            self.source_path,
+            f'sub-{self.subject}',
+            "mfa_resp_words.txt"
+        )
+        # load stim and response words
+        stim_words = np.loadtxt(stim_file, dtype=str)
+        resp_words = np.loadtxt(resp_file, dtype=str)
 
-        # Create main BIDS directories
-        self.bids_root.mkdir(parents=True, exist_ok=True)
+        sfreq = float(sfreq)
 
-        # Create subject directory (sub-<label>)
-        subject_dir = self.bids_root / f"sub-{self.subject}"
-        subject_dir.mkdir(exist_ok=True)
+        labels = []
+        samples = []
 
-        # Anatomical data goes in subject root (session-less)
-        (subject_dir / "anat").mkdir(exist_ok=True)
-        # For session-less data, create ieeg directory in subject root
-        (subject_dir / "ieeg").mkdir(exist_ok=True)
+        # Stimulus events: label as "stim/{word}" using onset time
+        for row in stim_words:
+            onset_sec, _offset_sec, word = row[0], row[1], row[2]
+            labels.append(f"stim/{word}")
+            samples.append(int(round(float(onset_sec) * sfreq)))
 
-        return subject_dir
+        # Response events: label as "resp/{word}" using onset time
+        for row in resp_words:
+            onset_sec, _offset_sec, word = row[0], row[1], row[2]
+            labels.append(f"resp/{word}")
+            samples.append(int(round(float(onset_sec) * sfreq)))
 
+        # Build event_id mapping
+        unique_labels = np.unique(labels)
+        event_id = {lbl: int(i + 1) for i, lbl in enumerate(unique_labels)}
+
+        # Build MNE events array [sample, 0, code]
+        codes = [event_id[lbl] for lbl in labels]
+        events = np.column_stack((
+            np.asarray(samples, dtype=int),
+            np.zeros(len(samples), dtype=int),
+            np.asarray(codes, dtype=int) 
+        ))
+
+        # Sort by sample time
+        order = np.argsort(events[:, 0])
+        events = events[order]
+
+        event_id = {code: name for name, code in event_id.items()}
+
+        return events, event_id
     def save_to_derivative(
         self,
         data,
@@ -437,15 +466,10 @@ class BIDSConverter:
         Raises
         - ValueError: If data is not loaded or required attributes are missing.
         """
-        if self.raw is None:
-            raise ValueError("No data loaded. Call load_data() first.")
 
         bids_root = Path(output_dir) if output_dir else self.bids_root
         if bids_root is None:
             raise ValueError("output_dir must be provided or bids_root must be set")
-
-        # Create BIDS directory structure
-        self.create_bids_directory()
 
         # Create BIDS path with session if provided
         bids_path = BIDSPath(
@@ -459,15 +483,23 @@ class BIDSConverter:
         # Create output directory if it doesn't exist
         bids_path.mkdir(exist_ok=True)
 
+        self.raw  = self._make_raw_object()
+
+        events, event_id = self._parse_events(self.raw.info['sfreq'])
+
         # update raw
-        raw = self.update_raw_object()
+        raw = self.update_raw_object(
+            events=events,
+            event_id=event_id
+        )
 
         # Write the data to BIDS format
+        desc_map = {code: name for name, code in event_id.items()}
         write_raw_bids(
             raw=raw,
             bids_path=bids_path,
-            events=self.events,
-            event_id=self.event_id,
+            events=events,
+            event_id=desc_map,
             overwrite=overwrite,
             verbose=verbose,
             allow_preload=True,
@@ -658,7 +690,6 @@ def main(
     bids_root: Path,
     subject: str,
     task: str,
-    audio_path: Optional[Path] = None,
     recon_path: Optional[Path] = None,
 ):
     """
@@ -675,12 +706,10 @@ def main(
         subject=subject,
         task=task,
         bids_root=bids_root,
-        audio_path=audio_path,
         recon_path=recon_path,
     )
 
     # Load and convert the data
-    bids_converter.load_data()
     bids_converter.convert_to_bids()
 
 
@@ -690,7 +719,7 @@ if __name__ == "__main__":
 
     parser.add_argument(
         "--source-path",
-        default=Path("/Users/shinanlin/Library/CloudStorage/Box-Box/CoganLab/Data/Micro/Processed Data"),
+        default=Path("/Users/shinanlin/Library/CloudStorage/Box-Box/CoganLab/Data/Micro/BIDS_processing"),
         type=Path,
         help='Directory containing the source data files'
     )
@@ -704,12 +733,6 @@ if __name__ == "__main__":
         "--subject",
         default="S26",
         help='Subject identifier (e.g., S41)'
-    )
-    parser.add_argument(
-        "--audio-path",
-        default=Path("/Users/shinanlin/Library/CloudStorage/Box-Box/CoganLab/Data/Micro/microphone"),
-        type=Path,
-        help='Directory containing audio files (optional)'
     )
     parser.add_argument(
         "--recon-path",
