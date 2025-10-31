@@ -111,7 +111,7 @@ class BIDSConverter:
         raw.close()
         # release raw_data from memory
         raw = mne.io.RawArray(
-            data = raw_data,
+            data = raw_data * 1e-6,
             info = info,
         )
         del raw_data
@@ -121,8 +121,7 @@ class BIDSConverter:
 
 
     def update_raw_object(self,
-                          events,
-                          event_id):
+                          ann):
         """
         Update the `raw` object with processed events and ensure montage.
 
@@ -136,14 +135,7 @@ class BIDSConverter:
         """
 
         sfreq = float(self.raw.info['sfreq'])
-
-        ann = mne.annotations_from_events(
-            events=events,
-            event_desc=event_id,
-            sfreq=sfreq,
-            orig_time=self.raw.info.get('meas_date')
-        )
-
+        
         self.raw.set_annotations(ann)
 
         # make custom montage if no montage is found in the raw object
@@ -355,46 +347,36 @@ class BIDSConverter:
             f'sub-{self.subject}',
             "mfa_resp_words.txt"
         )
-        # load stim and response words
-        stim_words = np.loadtxt(stim_file, dtype=str)
-        resp_words = np.loadtxt(resp_file, dtype=str)
 
-        sfreq = float(sfreq)
+        onsets_sec = []
+        durations_sec = []
+        descriptions = []
 
-        labels = []
-        samples = []
+        if os.path.exists(stim_file):
+            stim_words = np.loadtxt(stim_file, dtype=str)
+            for row in stim_words:
+                onset_sec, offset_sec, word = row[0], row[1], row[2]
+                onsets_sec.append(float(onset_sec))
+                durations_sec.append(max(0.0, float(offset_sec) - float(onset_sec)))
+                descriptions.append(f"stim/{word}")
 
-        # Stimulus events: label as "stim/{word}" using onset time
-        for row in stim_words:
-            onset_sec, _offset_sec, word = row[0], row[1], row[2]
-            labels.append(f"stim/{word}")
-            samples.append(int(round(float(onset_sec) * sfreq)))
+        if os.path.exists(resp_file):
+            resp_words = np.loadtxt(resp_file, dtype=str)
+            for row in resp_words:
+                onset_sec, offset_sec, word = row[0], row[1], row[2]
+                onsets_sec.append(float(onset_sec))
+                durations_sec.append(max(0.0, float(offset_sec) - float(onset_sec)))
+                descriptions.append(f"resp/{word}")
 
-        # Response events: label as "resp/{word}" using onset time
-        for row in resp_words:
-            onset_sec, _offset_sec, word = row[0], row[1], row[2]
-            labels.append(f"resp/{word}")
-            samples.append(int(round(float(onset_sec) * sfreq)))
+        ann = mne.Annotations(
+            onset=onsets_sec,
+            duration=durations_sec,
+            description=descriptions,
+            orig_time=self.raw.info.get('meas_date')
+        )
 
-        # Build event_id mapping
-        unique_labels = np.unique(labels)
-        event_id = {lbl: int(i + 1) for i, lbl in enumerate(unique_labels)}
+        return ann
 
-        # Build MNE events array [sample, 0, code]
-        codes = [event_id[lbl] for lbl in labels]
-        events = np.column_stack((
-            np.asarray(samples, dtype=int),
-            np.zeros(len(samples), dtype=int),
-            np.asarray(codes, dtype=int) 
-        ))
-
-        # Sort by sample time
-        order = np.argsort(events[:, 0])
-        events = events[order]
-
-        event_id = {code: name for name, code in event_id.items()}
-
-        return events, event_id
     def save_to_derivative(
         self,
         data,
@@ -485,21 +467,17 @@ class BIDSConverter:
 
         self.raw  = self._make_raw_object()
 
-        events, event_id = self._parse_events(self.raw.info['sfreq'])
+        ann = self._parse_events(self.raw.info['sfreq'])
 
         # update raw
         raw = self.update_raw_object(
-            events=events,
-            event_id=event_id
+            ann=ann
         )
 
-        # Write the data to BIDS format
-        desc_map = {code: name for name, code in event_id.items()}
+        # Write the data to BIDS format (derive events.tsv from annotations)
         write_raw_bids(
             raw=raw,
             bids_path=bids_path,
-            events=events,
-            event_id=desc_map,
             overwrite=overwrite,
             verbose=verbose,
             allow_preload=True,
@@ -589,7 +567,6 @@ class BIDSConverter:
         # --- T1w Conversion ---
         t1w_bids_path = BIDSPath(
                 subject=self.subject,
-                session=self.session_id,
                 datatype='anat',
                 suffix='T1w',
                 root=self.bids_root
@@ -641,7 +618,6 @@ class BIDSConverter:
         if ct_source_file.exists():
             ct_bids_path = BIDSPath(
                 subject=self.subject,
-                session=self.session_id, # CT is often co-registered to T1w of a specific session
                 datatype='anat',
                 suffix='ct', # BIDS suffix for CT scans
                 root=self.bids_root,
@@ -719,7 +695,7 @@ if __name__ == "__main__":
 
     parser.add_argument(
         "--source-path",
-        default=Path("/Users/shinanlin/Library/CloudStorage/Box-Box/CoganLab/Data/Micro/BIDS_processing"),
+        default=Path(r"C:\Users\ns458\Box\CoganLab\Data\Micro\BIDS_processing"),
         type=Path,
         help='Directory containing the source data files'
     )
@@ -736,7 +712,7 @@ if __name__ == "__main__":
     )
     parser.add_argument(
         "--recon-path",
-        default=Path("/Users/shinanlin/Library/CloudStorage/Box-Box/ECoG_Recon"),
+        default=Path(r"C:\Users\ns458\Box\ECoG_Recon"),
         type=Path,
         help='Parent directory containing subject anatomical subdirectories (e.g., ECoG_Recon/)'
     )
