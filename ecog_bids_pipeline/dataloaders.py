@@ -104,7 +104,7 @@ class rhdLoader:
 
         # save raw data as h5 file in output dir
         _ = self._save_raw_data(all_data['raw_data'],
-                                all_data['fs'],
+                                fs_down,
                                 all_data['bad_channels'],
                                 self.channel_map,
                                 f'sub-{self.subject}_raw.h5')
