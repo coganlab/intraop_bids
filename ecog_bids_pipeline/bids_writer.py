@@ -110,6 +110,7 @@ class BIDSConverter:
         # make a raw object
         raw.close()
         # release raw_data from memory
+        raw_data = raw_data.astype(np.float32)
         raw = mne.io.RawArray(
             data = raw_data * 1e-6,
             info = info,
@@ -142,7 +143,7 @@ class BIDSConverter:
         if self.raw.info.get_montage() is None:
             self.raw = self.add_montage_to_raw()
 
-        return self.raw
+        return
 
     def add_montage_to_raw(self):
         """
@@ -157,11 +158,15 @@ class BIDSConverter:
         - mne.io.Raw: The raw instance with montage set.
         """
         # load RAS file from anat directory
-        # ras_file = self.recon_path / f"{self.subject}/elec_recon/{self.subject}_elec_locations_RAS_brainshifted.txt"
-        ras_file = self.recon_path / f"{self.subject}/elec_recon/{self.subject}_elec_locations_RAS_brainshifted.txt"
+        ras_file = os.path.join(
+            self.recon_path,
+            f"{self.subject}",
+            "elec_recon",
+            f"{self.subject}_elec_locations_RAS_brainshifted.txt"
+        )
 
         # First check if file exists
-        if not ras_file.exists():
+        if not os.path.exists(ras_file):
             print(f"RAS file not found: {ras_file}, using custom montage as placeholder")
             montage = self.make_custom_montage(self.experiment_info)
             self.raw.set_montage(montage)
@@ -169,6 +174,7 @@ class BIDSConverter:
         try:
             # Try to load and set the RAS montage
             montage = self.load_ras_montage(ras_file)
+            
             self.raw.set_montage(montage)
         except Exception as e:
             # If any error occurs (e.g., channel mismatch, invalid format), fall back to custom montage
@@ -204,8 +210,12 @@ class BIDSConverter:
             names=['prefix', 'number', 'x', 'y', 'z', 'hemisphere', 'grid']
         )
 
-        # Create channel names by combining prefix and number
-        ch_names = df['number'].astype(str)
+        # Create channel names by remapping existing numbers to consecutive 1..N
+        # while preserving the original row order.
+        orig_nums = df['number'].astype(int).tolist()
+        unique_sorted = sorted(set(orig_nums))
+        num_map = {old: i + 1 for i, old in enumerate(unique_sorted)}
+        ch_names = [str(num_map[n]) for n in orig_nums]
 
         # Get coordinates in meters (MNE uses meters)
         pos = df[['x', 'y', 'z']].values
@@ -465,24 +475,24 @@ class BIDSConverter:
         # Create output directory if it doesn't exist
         bids_path.mkdir(exist_ok=True)
 
-        self.raw  = self._make_raw_object()
+        self.raw = self._make_raw_object()
 
         ann = self._parse_events(self.raw.info['sfreq'])
 
         # update raw
-        raw = self.update_raw_object(
+        self.update_raw_object(
             ann=ann
         )
 
         # Write the data to BIDS format (derive events.tsv from annotations)
         write_raw_bids(
-            raw=raw,
+            raw=self.raw, 
             bids_path=bids_path,
             overwrite=overwrite,
-            verbose=verbose,
+            verbose=True,
             allow_preload=True,
             format='EDF',
-            acpc_aligned=True
+            acpc_aligned=True,
         )
 
         # Store the bids_path for later use
@@ -701,13 +711,13 @@ if __name__ == "__main__":
     )
     parser.add_argument(
         "--bids-root",
-        default=Path("./bids/phoneme"),
+        default=Path("./bids/lexical/"),
         type=Path,
         help='Root directory to save the BIDS dataset'
     )
     parser.add_argument(
         "--subject",
-        default="S26",
+        default="S78",
         help='Subject identifier (e.g., S41)'
     )
     parser.add_argument(
@@ -718,8 +728,8 @@ if __name__ == "__main__":
     )
     parser.add_argument(
         "--task",
-        default="phoneme",
-        help='Name of the task (default: phoneme)'
+        default="lexical",
+        help='Name of the task (default: lexical)'
     )
 
     args = parser.parse_args()
