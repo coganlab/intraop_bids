@@ -93,6 +93,15 @@ class rhdLoader:
         bad_channels = self._get_high_impedance_channels(all_data['impedance'])
         all_data['bad_channels'] = bad_channels
 
+        # resample raw data to 2 kHz
+        fs_down = 2000
+        if all_data['fs'] != fs_down:
+            logger.info(f'Resampling raw data from {all_data["fs"]} Hz to '
+                        f'{fs_down} Hz...')
+            all_data['raw_data'] = resample_poly(all_data['raw_data'],
+                                                 fs_down, all_data['fs'], 
+                                                 axis=1)
+
         # save raw data as h5 file in output dir
         _ = self._save_raw_data(all_data['raw_data'],
                                 all_data['fs'],
