@@ -33,6 +33,13 @@ import numpy as np
 import h5py
 import os
 import mne
+from dataloaders import rhdLoader
+
+
+TASK2MFA = {
+    "lexical": "lexical_repeat_intraop",
+    "phoneme": "phoneme_sequencing",
+}
 
 
 class BIDSConverter:
@@ -676,6 +683,8 @@ def main(
     bids_root: Path,
     subject: str,
     task: str,
+    fileIDs: Optional[list] = None,
+    array_type: Optional[str] = None,
     recon_path: Optional[Path] = None,
 ):
     """
@@ -686,9 +695,15 @@ def main(
     - Load source data and write outputs to a BIDS dataset.
     """
 
+    loader = rhdLoader(subject, source_path, fileIDs=fileIDs,
+                       array_type=array_type)
+    loader.load_data()
+    loader.make_cue_events()
+    loader.run_mfa(task_name=TASK2MFA[task])
+
     # Initialize the converter
     bids_converter = BIDSConverter(
-        source_path=source_path,
+        source_path=loader.out_dir,
         subject=subject,
         task=task,
         bids_root=bids_root,
@@ -705,13 +720,15 @@ if __name__ == "__main__":
 
     parser.add_argument(
         "--source-path",
-        default=Path(r"C:\Users\ns458\Box\CoganLab\Data\Micro\BIDS_processing"),
-        type=Path,
-        help='Directory containing the source data files'
+        default=None,
+        help='Directory containing the RHD source data files. If not provided,' \
+        'the user will be prompted to select a directory via GUI. This directory' \
+        'should also contain the trialInfo file from the task computer. This' \
+        'will need to be added manually for now.'
     )
     parser.add_argument(
         "--bids-root",
-        default=Path("./bids/lexical/"),
+        default=Path.home() / "Box" / "CoganLab" / "BIDS_1.0_Lexical_µECoG" / "BIDS",
         type=Path,
         help='Root directory to save the BIDS dataset'
     )
@@ -721,8 +738,21 @@ if __name__ == "__main__":
         help='Subject identifier (e.g., S41)'
     )
     parser.add_argument(
+        "--fileIDs",
+        nargs='+',
+        default=None,
+        help='List of file IDs to process indicating the RHD files to process' \
+        'when ordered alphabetically in the source data directory. (e.g.' \
+        'for the 5th through 10th files, use --fileIDs 5 6 7 8 9 10)'
+    )
+    parser.add_argument(
+        "--array-type",
+        default=None,
+        help='Type of electrode array (128-strip, 256-grid, 256-strip, hybrid-strip)'
+    )
+    parser.add_argument(
         "--recon-path",
-        default=Path(r"C:\Users\ns458\Box\ECoG_Recon"),
+        default=Path.home() / "Box" / "ECoG_Recon",
         type=Path,
         help='Parent directory containing subject anatomical subdirectories (e.g., ECoG_Recon/)'
     )
