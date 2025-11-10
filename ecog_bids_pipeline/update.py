@@ -13,6 +13,7 @@ import soundfile as sf
 from ieeg.io import raw_from_layout
 from tqdm import tqdm
 import soundfile as sf
+from mne_bids import write_raw_bids
 import os
 
 def load_ras_montage(ras_file):
@@ -105,7 +106,6 @@ def main(
     subject: str,
     task: str,
     save_path: str,
-    overwrite: bool,
 ):
 
     bids_layout = BIDSLayout(
@@ -126,11 +126,10 @@ def main(
         recon_dir,
         subject,
     )
-
     bids_path = BIDSPath(
             subject=subject.lstrip('sub-'),  # Remove 'sub-' prefix if present
             task=task,
-            root=str(save_path),
+            root=os.path.join(save_path, 'bids'),
             datatype='ieeg',
             suffix='ieeg',
         )
@@ -139,7 +138,7 @@ def main(
     write_raw_bids(
         raw=raw,
         bids_path=bids_path,
-        overwrite=overwrite,
+        overwrite=True,
         verbose=True,
         allow_preload=True,
         format='EDF',
@@ -153,15 +152,15 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
 
     parser.add_argument("--bids_root", type=str,
-                        default=".",
+                        default=r"C:\Users\ns458\Box\CoganLab\BIDS_1.0_Phoneme_Sequence_uECoG_share\BIDS",
                         help="Root directory of the BIDS dataset")
     parser.add_argument("--save_path", type=str,
                         default=".",
                         help="Path to save the raw file")
-    parser.add_argument("--recon_dir", type=str,
-                        default="ECoG_Recon",
+    parser.add_argument("--recon_dir",default=r"C:\Users\ns458\Box\ECoG_Recon",
+                        type=str,
                         help="Path to the stimulus file")
-    parser.add_argument("--subject", type=str, default='D0019',
+    parser.add_argument("--subject", type=str, default='S58',
                         help="Subject to process")
     parser.add_argument("--task", type=str, default='phoneme',
                         help="Task to process")
