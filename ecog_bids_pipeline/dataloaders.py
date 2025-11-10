@@ -83,24 +83,16 @@ class rhdLoader:
         Returns:
             The loader instance (self) to allow method chaining.
         """
+        fs_down = 2000  # target downsampled frequency in Hz
         logger.info(f'Loading RHD data for subject {self.subject} '
                     f'from directory: {self.rhd_dir}...')
         rhd_files = self._get_subj_files()
         print(f'Found files: {rhd_files}')
-        all_data = self._build_full_rhd_data(rhd_files)
+        all_data = self._build_full_rhd_data(rhd_files, fs_down)
 
         # calculate bad channels based on impedance
         bad_channels = self._get_high_impedance_channels(all_data['impedance'])
         all_data['bad_channels'] = bad_channels
-
-        # resample raw data to 2 kHz
-        fs_down = 2000
-        if all_data['fs'] != fs_down:
-            logger.info(f'Resampling raw data from {all_data["fs"]} Hz to '
-                        f'{fs_down} Hz...')
-            all_data['raw_data'] = resample_poly(all_data['raw_data'],
-                                                 fs_down, all_data['fs'], 
-                                                 axis=1)
 
         # save raw data as h5 file in output dir
         _ = self._save_raw_data(all_data['raw_data'],
@@ -482,7 +474,7 @@ class rhdLoader:
         return chan_map
 
     def _build_full_rhd_data(
-        self, rhd_files: Sequence[Path]
+        self, rhd_files: Sequence[Path], fs_down: float
     ) -> Dict[str, Any]:
         """Read and concatenate data from multiple RHD files.
 
@@ -500,12 +492,25 @@ class rhdLoader:
         mic_all = np.empty((0,), dtype=DATA_TYPE)
         impedance_all = np.empty((0, n_chans), dtype=DATA_TYPE)
         # store data from each RHD file (corresponds to 1 min of data)
+        log_downsample = False
         for rhd_file in rhd_files:
             logger.info(f'Loading RHD file: {rhd_file.name}')
-            data = read_data(rhd_file)
+            data = read_data(rhd_file)  # resample raw data to 2 kHz
+
+            fs_data = data['frequency_parameters']['amplifier_sample_rate']
+            if fs_data != fs_down:
+                if not log_downsample:
+                    logger.info(f'Resampling raw data from {fs_data} Hz to '
+                                f'{fs_down} Hz...')
+                    log_downsample = True
+                amp_data = resample_poly(data['amplifier_data'],
+                                         fs_down, fs_data,
+                                         axis=1)
+            else:
+                amp_data = data['amplifier_data']
             amplifier_data_all = np.append(
                 amplifier_data_all,
-                data['amplifier_data'].astype(DATA_TYPE),
+                amp_data.astype(DATA_TYPE),
                 axis=1)
             trigger_all = np.append(
                 trigger_all,
