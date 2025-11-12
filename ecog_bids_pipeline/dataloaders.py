@@ -492,17 +492,14 @@ class rhdLoader:
         mic_all = np.empty((0,), dtype=DATA_TYPE)
         impedance_all = np.empty((0, n_chans), dtype=DATA_TYPE)
         # store data from each RHD file (corresponds to 1 min of data)
-        log_downsample = False
         for rhd_file in rhd_files:
             logger.info(f'Loading RHD file: {rhd_file.name}')
             data = read_data(rhd_file)  # resample raw data to 2 kHz
 
             fs_data = data['frequency_parameters']['amplifier_sample_rate']
             if fs_data != fs_down:
-                if not log_downsample:
-                    logger.info(f'Resampling raw data from {fs_data} Hz to '
-                                f'{fs_down} Hz...')
-                    log_downsample = True
+                logger.info(f'Resampling raw data from {fs_data} Hz to '
+                            f'{fs_down} Hz...')
                 amp_data = resample_poly(data['amplifier_data'],
                                          fs_down, fs_data,
                                          axis=1)
