@@ -36,6 +36,9 @@ def update_events_from_txt(bids_root, subject, task,
     raw = raw_from_layout(
         bids_layout,
         subject=subject,
+        task=task,
+        # acquisition='01',
+        # run='01',
         extension='.edf',
         preload=False,
     )
@@ -135,7 +138,7 @@ def main():
         subject=args.subject,
         task=args.task,
         stim_txt=args.stim_txt,
-        resp_txt=args.resp_txt
+        resp_txt=args.resp_txt,
     )
 
 
