@@ -106,6 +106,7 @@ class BIDSConverter:
         raw_data = raw['data'][()]
         self.fs = raw['fs'][()]
         channel_map = raw['channel_map'][()]
+        self.channel_map = channel_map
 
         channel_names = [f'{i+1}' for i in range(len(raw_data))]
         info = mne.create_info(
@@ -175,7 +176,7 @@ class BIDSConverter:
         # First check if file exists
         if not os.path.exists(ras_file):
             print(f"RAS file not found: {ras_file}, using custom montage as placeholder")
-            montage = self.make_custom_montage(self.experiment_info)
+            montage = self.make_custom_montage(self.channel_map)
             self.raw.set_montage(montage)
             return self.raw
         try:
@@ -187,7 +188,7 @@ class BIDSConverter:
             # If any error occurs (e.g., channel mismatch, invalid format), fall back to custom montage
             print(f"Error applying RAS montage: {e}")
             print("Falling back to custom montage...")
-            montage = self.make_custom_montage(self.experiment_info)
+            montage = self.make_custom_montage(self.channel_map)
             self.raw.set_montage(montage)
 
         return self.raw
@@ -241,7 +242,7 @@ class BIDSConverter:
         return montage
 
     @staticmethod
-    def make_custom_montage(experiment_info):
+    def make_custom_montage(channel_map):
         """
         Create a synthetic montage from `experiment_info['channel_map']`.
 
@@ -254,7 +255,7 @@ class BIDSConverter:
         - mne.channels.DigMontage: Synthetic montage with 2D layout positions.
         """
         from mne.channels import Layout, make_dig_montage
-        channel_map = experiment_info['channel_map']
+        # channel_map = experiment_info['channel_map']
         n_rows, n_cols = channel_map.shape
 
         pos = []
@@ -734,7 +735,7 @@ if __name__ == "__main__":
     )
     parser.add_argument(
         "--subject",
-        default="S78",
+        default="S71",
         help='Subject identifier (e.g., S41)'
     )
     parser.add_argument(
