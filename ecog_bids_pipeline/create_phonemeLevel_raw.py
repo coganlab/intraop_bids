@@ -10,6 +10,7 @@ Steps:
 
 import argparse
 import logging
+import re
 from pathlib import Path
 from bids import BIDSLayout
 from mne_bids import BIDSPath
@@ -20,11 +21,11 @@ import numpy as np
 logger = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO)
 
-PS2ARPA = {'a': 'AA1', 'ae': 'EH1', 'i': 'IY0', 'u': 'UH1', 'b': 'B', 'p': 'P',
-           'v': 'V', 'g': 'G', 'k': 'K'}
+PS2ARPA = {'a': 'AA', 'ae': 'EH', 'i': 'IY', 'u': 'UW', 'b': 'B', 'p': 'P',
+           'v': 'V', 'g': 'G', 'k': 'K', 'UH': 'UW', 'AE': 'EH'}
 
 
-def load_raw(bids_root, subject, task):
+def load_raw(bids_root, subject):
     """Load raw data from BIDS dataset."""
     bids_layout = BIDSLayout(
         root=bids_root,
@@ -73,7 +74,7 @@ def txt2df(txt_path, trial_type, subject, nPhons, fs):
     """Convert .txt file to events DataFrame."""
     df = pd.read_csv(txt_path, sep='\t', names=['onset', 'offset', 'phoneme'])
     df['duration'] = df['offset'] - df['onset']
-    df['value'] = df['phoneme'].apply(lambda x: PS2ARPA.get(x, x))
+    df['value'] = df['phoneme'].apply(lambda x: PS2ARPA.get(remove_arpabet_stress(x), remove_arpabet_stress(x)))
     df['subject'] = subject
     df['sample'] = (df['onset'] * fs).astype(int)
     df['trial'] = (np.arange(len(df)) // nPhons) + 1
@@ -101,6 +102,14 @@ def save_events_tsv(bids_root, subject, task, events_df):
 
     events_df.to_csv(events_path.fpath, sep='\t', index=False)
     logger.info(f'Saved events.tsv to {events_path.fpath}')
+
+
+def remove_arpabet_stress(phoneme: str) -> str:
+    """Remove stress markers from ARPAbet phonemes.
+
+    E.g., 'AH0' -> 'AH', 'IY1' -> 'IY'
+    """
+    return re.sub(r'\d', '', phoneme)
 
 
 def parse_args():
@@ -139,7 +148,6 @@ def main():
     raw, _ = load_raw(
         bids_root=bids_root,
         subject=args.subject,
-        task=args.task
     )
 
     events_df = create_phon_tsv(
