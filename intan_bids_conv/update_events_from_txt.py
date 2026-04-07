@@ -20,6 +20,8 @@ import logging
 logger = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO)
 
+DEFAULT_DATA_DIR = Path('~/Box/CoganLab/Data/Micro/BIDS_processing').expanduser()
+
 
 def update_events_from_txt(bids_root, subject, task,
                            stim_txt=None, resp_txt=None):
@@ -99,8 +101,15 @@ def update_events_from_txt(bids_root, subject, task,
 
 
 def txt2df(txt_file, trial_type, subject, fs):
-    event_df = pd.read_csv(txt_file, sep='\t', names=['onset', 'offset',
-                                                      'value'])
+    try:
+        event_df = pd.read_csv(txt_file, sep='\t', names=['onset', 'offset',
+                                                        'value'])
+    except FileNotFoundError:
+        # checks for file in default data directory if it can't find above.
+        # Helpful if path to text file is given relative to data directory
+        txt_file = DEFAULT_DATA_DIR / f'sub-{subject}' / txt_file
+        event_df = pd.read_csv(txt_file, sep='\t', names=['onset', 'offset',
+                                                        'value'])
     event_df['duration'] = event_df['offset'] - event_df['onset']
     event_df['trial_type'] = trial_type
     event_df['sample'] = (event_df['onset'] * fs).astype(int)
@@ -113,9 +122,12 @@ def txt2df(txt_file, trial_type, subject, fs):
 
 def parse_args():
     user_path = Path.home()
+    # default_bids_root = (user_path / 'Box' / 'CoganLab' /
+    #                      'BIDS_1.0_Phoneme_Sequence_uECoG' / 'BIDS')
+    # default_task = 'phoneme'
     default_bids_root = (user_path / 'Box' / 'CoganLab' /
-                         'BIDS_1.0_Phoneme_Sequence_uECoG' / 'BIDS')
-    default_task = 'phoneme'
+                         'BIDS_1.0_Lexical_µECoG' / 'BIDS')
+    default_task = 'lexical'
     parser = argparse.ArgumentParser(
             description="Update BIDS events.tsv from provided .txt files."
         )
