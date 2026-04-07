@@ -615,6 +615,7 @@ class BIDSConverter:
                 img = nib.load(str(native_mgz))
                 temp_dir = t1w_bids_path.fpath.parent
                 temp_file = temp_dir / 'temp_mri.nii.gz'
+                temp_dir.mkdir(parents=True, exist_ok=True)
                 nib.save(img, str(temp_file))
                 write_anat(
                     image=str(temp_file),
@@ -736,7 +737,7 @@ if __name__ == "__main__":
     )
     parser.add_argument(
         "--subject",
-        default="S71",
+        default=None,
         help='Subject identifier (e.g., S41)'
     )
     parser.add_argument(
@@ -750,7 +751,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--array-type",
         default=None,
-        help='Type of electrode array (128-strip, 256-grid, 256-strip, hybrid-strip)'
+        help='Type of electrode array (128-strip, 256-grid, 256-strip, 1024-grid, hybrid-strip)'
     )
     parser.add_argument(
         "--recon-path",
