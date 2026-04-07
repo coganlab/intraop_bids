@@ -471,7 +471,8 @@ class rhdLoader:
         # load channel map based on array type
         chan_map_dir = Path(__file__).parent / 'channel_maps'
         chan_map_fname = chan_map_dir / f'{array_type}.mat'
-        chan_map = loadmat(chan_map_fname)['chanMap'].squeeze()
+        # convert 1-indexed channels in mat file to 0-indexed
+        chan_map = loadmat(chan_map_fname)['chanMap'].squeeze() - 1
         return chan_map
 
     def _build_full_rhd_data(
@@ -487,7 +488,8 @@ class rhdLoader:
             A dictionary with keys: 'raw_data' (2D numpy array channels x
             samples), 'trigger', 'mic', 'impedance' (1D array), and 'fs'.
         """
-        n_chans = np.nanmax(self.channel_map).astype(int)  # 1-indexed chans
+        # loaded as 0-indexed chans
+        n_chans = np.nanmax(self.channel_map).astype(int) + 1
         amplifier_data_all = np.empty((n_chans, 0), dtype=DATA_TYPE)
         trigger_all = np.empty((0,), dtype=DATA_TYPE)
         mic_all = np.empty((0,), dtype=DATA_TYPE)
