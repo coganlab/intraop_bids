@@ -33,6 +33,7 @@ import numpy as np
 import h5py
 import os
 import mne
+import pandas as pd
 from dataloaders import rhdLoader
 
 
@@ -403,6 +404,7 @@ class BIDSConverter:
         filename: str,
         file_type: str = 'wav',
         description: str = 'raw',
+        overwrite: bool = True,
         **kwargs
     ) -> Optional[Path]:
         """
@@ -429,6 +431,16 @@ class BIDSConverter:
             check=False
         )
 
+        verbose = bool(kwargs.get('verbose', False))
+
+        if derivative_dir.fpath.exists() and not overwrite:
+            if verbose:
+                print(
+                    "Derivative already exists, skipping: "
+                    f"{derivative_dir.fpath}"
+                )
+            return derivative_dir
+
         derivative_dir.mkdir(exist_ok=True)
 
         if file_type == 'wav':
@@ -438,6 +450,12 @@ class BIDSConverter:
                 data,
                 self.audio_fs
             )
+        elif file_type == 'tsv':
+            if not isinstance(data, pd.DataFrame):
+                data = pd.DataFrame(data)
+            data.to_csv(derivative_dir.fpath, sep='\t', index=False)
+        else:
+            raise ValueError(f"Unsupported derivative file type: {file_type}")
 
         return derivative_dir
 
@@ -507,8 +525,14 @@ class BIDSConverter:
         # Store the bids_path for later use
         self.bids_path = bids_path
 
+        # Write channel map information to derivatices folder
+        if hasattr(self, 'channel_map') and self.channel_map is not None:
+            self._convert_channel_map_to_bids(overwrite=overwrite, verbose=verbose)
+
+        # Save anatomy information
         self._convert_anat_to_bids(overwrite=overwrite, verbose=verbose)
 
+        # Write audio information to derivative
         if hasattr(self, 'audio_files') and self.audio_files is not None:
             self.save_to_derivative(
                 data=self.audio_files,
@@ -679,6 +703,85 @@ class BIDSConverter:
         else:
             if verbose:
                 print(f"CT file (postimpRaw.nii.gz) not found: {ct_source_file}. Skipping CT conversion.")
+
+    def _convert_channel_map_to_bids(self, overwrite: bool, verbose: bool):
+        """Serialize the channel map to a TSV derivative.
+
+        The channel map is stored as a grid-shaped array where each non-NaN
+        entry contains the channel number assigned to that grid position.
+        This method flattens the array into a tabular representation with
+        one row per recording channel.
+        """
+        if self.bids_path is None:
+            raise ValueError("BIDS path not set; call convert_to_bids() first")
+
+        if self.channel_map is None:
+            if verbose:
+                print(
+                    "No channel map available; "
+                    "skipping channel map derivative."
+                )
+            return None
+
+        channel_map = np.asarray(self.channel_map)
+        if channel_map.ndim != 2:
+            raise ValueError(
+                "Expected a 2D channel map array, got shape "
+                f"{channel_map.shape}"
+            )
+
+        rows = []
+        raw_channel_names = self.raw.ch_names if self.raw is not None else None
+        for row_idx in range(channel_map.shape[0]):
+            for col_idx in range(channel_map.shape[1]):
+                channel_number = channel_map[row_idx, col_idx]
+                if pd.isna(channel_number):
+                    continue
+                channel_index = int(channel_number)
+                if raw_channel_names is None:
+                    channel_name = str(int(channel_number))
+                elif 0 <= channel_index < len(raw_channel_names):
+                    channel_name = raw_channel_names[channel_index]
+                else:
+                    raise ValueError(
+                        "Channel map references channel number "
+                        f"{int(channel_number)}, which is out of range for "
+                        "the raw object"
+                    )
+                rows.append({
+                    "row": row_idx,
+                    "col": col_idx,
+                    "channel_number": int(channel_number),
+                    "name": channel_name,
+                })
+
+        if not rows:
+            if verbose:
+                print(
+                    "Channel map does not contain any recording channels; "
+                    "skipping derivative write."
+                )
+            return None
+
+        channel_map_df = pd.DataFrame(rows)
+        channel_map_df = channel_map_df.sort_values(
+            ["channel_number", "row", "col"]
+        ).reset_index(drop=True)
+
+        derivative_path = self.save_to_derivative(
+            data=channel_map_df,
+            folder="channelMap",
+            filename="channelMap",
+            file_type="tsv",
+            description=None,
+            overwrite=overwrite,
+            verbose=verbose,
+        )
+
+        if verbose:
+            print(f"Saved channel map derivative to: {derivative_path.fpath}")
+
+        return derivative_path
 
 
 def main(
