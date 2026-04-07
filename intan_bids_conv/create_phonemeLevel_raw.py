@@ -21,6 +21,7 @@ import numpy as np
 logger = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO)
 
+DEFAULT_DATA_DIR = Path('~/Box/CoganLab/Data/Micro/BIDS_processing').expanduser()
 PS2ARPA = {'a': 'AA', 'ae': 'EH', 'i': 'IY', 'u': 'UW', 'b': 'B', 'p': 'P',
            'v': 'V', 'g': 'G', 'k': 'K', 'UH': 'UW', 'AE': 'EH'}
 
@@ -41,10 +42,10 @@ def load_raw(bids_root, subject):
     return raw, bids_layout
 
 
-def create_phon_tsv(stim_txt, resp_txt, subject, nPhons, fs):
+def create_phon_tsv(stim_txt, resp_txt, subject, nPhons, fs, task):
     """Create phoneme-level annotations from .txt files."""
-    stim_df = txt2df(stim_txt, 'stimulus', subject, nPhons, fs)
-    resp_df = txt2df(resp_txt, 'response', subject, nPhons, fs)
+    stim_df = txt2df(stim_txt, 'stimulus', subject, nPhons, fs, task)
+    resp_df = txt2df(resp_txt, 'response', subject, nPhons, fs, task)
 
     tot_df = pd.concat([stim_df, resp_df]).sort_values(by='onset').reset_index(drop=True)
     print(tot_df.head(n=10))
@@ -70,11 +71,20 @@ def create_phon_tsv(stim_txt, resp_txt, subject, nPhons, fs):
     return tot_df
 
 
-def txt2df(txt_path, trial_type, subject, nPhons, fs):
+def txt2df(txt_path, trial_type, subject, nPhons, fs, task):
     """Convert .txt file to events DataFrame."""
-    df = pd.read_csv(txt_path, sep='\t', names=['onset', 'offset', 'phoneme'])
+    try:
+        df = pd.read_csv(txt_path, sep='\t', names=['onset', 'offset', 'phoneme'])
+    except FileNotFoundError:
+        # checks for file in default data directory if it can't find above.
+        # Helpful if path to text file is given relative to data directory
+        txt_path = DEFAULT_DATA_DIR / f'sub-{subject}' / txt_path
+        df = pd.read_csv(txt_path, sep='\t', names=['onset', 'offset', 'phoneme'])
     df['duration'] = df['offset'] - df['onset']
-    df['value'] = df['phoneme'].apply(lambda x: PS2ARPA.get(remove_arpabet_stress(x), remove_arpabet_stress(x)))
+    if task == 'lexical':
+        df['value'] = df['phoneme'].apply(lambda x: remove_arpabet_stress(x))
+    else:
+        df['value'] = df['phoneme'].apply(lambda x: PS2ARPA.get(remove_arpabet_stress(x), remove_arpabet_stress(x)))
     df['subject'] = subject
     df['sample'] = (df['onset'] * fs).astype(int)
     df['trial'] = (np.arange(len(df)) // nPhons) + 1
@@ -91,8 +101,8 @@ def save_events_tsv(bids_root, subject, task, events_df):
         root=bids_root / 'derivatives' / 'phonemeLevel',
         subject=subject,
         task=task,
-        acquisition='01',
-        run='01',
+        # acquisition='01',
+        # run='01',
         datatype='ieeg',
         suffix='events',
         description='phonemeLevel',
@@ -114,9 +124,12 @@ def remove_arpabet_stress(phoneme: str) -> str:
 
 def parse_args():
     user_path = Path.home()
+    # default_bids_root = (user_path / 'Box' / 'CoganLab' /
+    #                      'BIDS_1.0_Phoneme_Sequence_uECoG' / 'BIDS')
+    # default_task = 'phoneme'
     default_bids_root = (user_path / 'Box' / 'CoganLab' /
-                         'BIDS_1.0_Phoneme_Sequence_uECoG' / 'BIDS')
-    defatult_task = 'phoneme'
+                         'BIDS_1.0_Lexical_µECoG' / 'BIDS')
+    default_task = 'lexical'
 
     parser = argparse.ArgumentParser(
         description='Create phoneme-level events.tsv from .txt annotations.'
@@ -125,8 +138,8 @@ def parse_args():
                         help='Path to the BIDS root directory.')
     parser.add_argument('--subject', type=str, required=True,
                         help='Subject identifier (e.g., sub-01).')
-    parser.add_argument('--task', type=str, default=defatult_task,
-                        help='Task identifier (e.g., task-speech).')
+    parser.add_argument('--task', type=str, default=default_task,
+                        help='Task identifier (e.g., lexical).')
     parser.add_argument('--stim_txt', required=True, type=str,
                         help='Path to stimulus .txt annotation file.')
     parser.add_argument('--resp_txt', required=True, type=str,
@@ -155,7 +168,8 @@ def main():
         resp_txt=args.resp_txt,
         subject=args.subject,
         nPhons=nPhons,
-        fs=raw.info['sfreq']
+        fs=raw.info['sfreq'],
+        task=args.task
     )
 
     # save raw data to phonemeLevel derivative folder
