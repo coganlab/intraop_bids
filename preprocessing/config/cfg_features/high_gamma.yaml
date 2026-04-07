@@ -1,0 +1,9 @@
+name: high_gamma
+
+extractor:
+  # _target_: preprocessing.utils.feature_extraction.extract_band_hilbert
+  _target_: utils.feature_extraction.extract_band_hilbert
+
+  frange: [70, 150]
+
+out_fs: 200

@@ -1,0 +1,26 @@
+bids_root: ???
+
+patient: ???
+
+load_kwargs:
+  # passed to raw_from_layout
+  preload: true
+
+reference: CAR
+
+sig_channels: true
+
+# Shared preprocessing / QC
+trial_selection:
+  method: 1
+  threshold: 10
+  chan_thresh: 0.8
+
+
+task_periods:
+  - perception
+  - production
+
+features:
+  - high_gamma
+  - spike_band

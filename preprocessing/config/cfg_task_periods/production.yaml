@@ -1,0 +1,9 @@
+name: production
+
+align_to: response
+
+full_times: [-1.5, 2.0]
+
+feat_times: [-1.0, 1.5]
+
+sig_times: [-0.25, 0.25]

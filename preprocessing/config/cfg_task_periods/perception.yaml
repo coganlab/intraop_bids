@@ -1,0 +1,9 @@
+name: perception
+
+align_to: stimulus
+
+full_times: [-1.5, 2.0]
+
+feat_times: [-1.0, 1.5]
+
+sig_times: [0, 0.5]
