@@ -59,10 +59,10 @@ class rhdLoader:
             rhd_dir = filedialog.askdirectory(
                 title=f'Select RHD data directory for subject {subject}')
         self.rhd_dir = Path(rhd_dir)
-        self.fileIDs = fileIDs
+        self.fileIDs = [int(f) for f in fileIDs] if fileIDs is not None else None
 
         if array_type is None:
-            arr_types = ['128-strip', '256-grid', '256-strip', 'hybrid-strip']
+            arr_types = ['128-strip', '256-grid', '256-strip', '1024-grid', 'hybrid-strip']
             types = '/'.join(arr_types)
             resp = input(f'Please specify array type {types}:')
             if resp in arr_types:
@@ -448,6 +448,7 @@ class rhdLoader:
             be filtered to those indices (1-indexed by order).
         """
         pattern = f'{self.subject}*.rhd'
+        # pattern = '*.rhd'
         rhd_files = sorted(self.rhd_dir.glob(pattern))
         # only keep files selected by numerical IDs corresponding to order
         if self.fileIDs is not None:
@@ -805,39 +806,3 @@ def main(data_dir, subject, fileIDs, array_type='None',
     loader.run_mfa(task_name=task)
     print(loader.create_trials_dict())
     print('RHD data loaded successfully.')
-
-
-if __name__ == "__main__":
-    user_path = Path.home()
-    # data_dir = None
-
-    # data_dir = (user_path /
-    #             r'Box\CoganLab\uECoG_Upload\S26_04_20_2021_Human_Intraop')
-    # subject = 'S26'
-    # fileIDs = range(31, 43)
-    # main(data_dir, subject, fileIDs, array_type='128-strip',
-    #      task='phoneme_sequencing')
-
-    # data_dir = (user_path /
-    #             r'Box\CoganLab\uECoG_Upload\S78_08_20_2025'
-    #             r'\S78_IntraOp_250820_111305')
-    # subject = 'S78'
-    # fileIDs = None
-    # main(data_dir, subject, fileIDs, array_type='256-grid',
-    #      task='lexical_repeat_intraop')
-
-    # data_dir = (user_path /
-    #             r'Box\CoganLab\uECoG_Upload\S73_03_18_2025'
-    #             r'\S73_V1_250318_120342')
-    # subject = 'S73'
-    # fileIDs = None
-    # main(data_dir, subject, fileIDs, array_type='256-strip',
-    #      task='lexical_repeat_intraop')
-
-    data_dir = (user_path /
-                r'C:\Users\zms14\Box\CoganLab\uECoG_Upload\S57_12_19_2023'
-                r'\S57_Recording_231219_113044')
-    subject = 'S57'
-    fileIDs = None
-    main(data_dir, subject, fileIDs, array_type='hybrid-strip',
-         task='phoneme_sequencing')
