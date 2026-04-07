@@ -108,11 +108,12 @@ class BIDSConverter:
         channel_map = raw['channel_map'][()]
         self.channel_map = channel_map
 
-        channel_names = [f'{i+1}' for i in range(len(raw_data))]
+        # 0-indexed channels
+        channel_names = [f'{i}' for i in range(len(raw_data))]
         info = mne.create_info(
             ch_names=channel_names,
             sfreq=self.fs,
-            ch_types='seeg'
+            ch_types='ecog'
         )
         info['bads'] = [str(ch) for ch in raw['bad_channels'][()]]
         # make a raw object
