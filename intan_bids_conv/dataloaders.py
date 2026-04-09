@@ -8,6 +8,7 @@ import subprocess
 import numpy as np
 from scipy.io import loadmat, wavfile
 from scipy.signal import resample_poly, correlate, find_peaks
+from scipy.stats import median_abs_deviation
 import noisereduce as nr
 import matplotlib.pyplot as plt
 import mne
@@ -71,6 +72,7 @@ class rhdLoader:
                 raise ValueError('Invalid array type specified. This type may'
                                  'not be implemented yet.')
         self.channel_map = self._get_channel_map(array_type)
+        self.save_channel_map()
 
     def load_data(self) -> "rhdLoader":
         """Load RHD data for the initialized subject and save artifacts.
@@ -252,11 +254,11 @@ class rhdLoader:
         trig = np.asarray(trigger, dtype=float)
         t_axis = np.arange(len(trig)) / fs
 
-        # --- Step 1: Rough normalization ---
+        # --- Step 1: Robust baseline + noise estimation ---
         baseline = np.percentile(trig, 10)
         trig_z = trig - baseline
-        std_est = np.std(trig_z)
-        task_start_thresh = baseline + threshold_factor * std_est
+        noise_std = median_abs_deviation(trig_z, scale='normal')
+        task_start_thresh = baseline + threshold_factor * noise_std
 
         trig = np.maximum(trig, baseline)
 
@@ -276,8 +278,10 @@ class rhdLoader:
         # --- Step 3: Define search window for trials ---
         trig_post = trig[task_start_idx:]
         baseline_post = np.percentile(trig_post, 10)
-        std_post = np.std(trig_post - baseline_post)
-        threshold = baseline_post + threshold_factor * std_post
+        noise_std_post = median_abs_deviation(
+            trig_post - baseline_post, scale='normal',
+        )
+        threshold = baseline_post + threshold_factor * noise_std_post
 
         min_samples = int(min_dist_s * fs)
         peaks_trials, props_trials = find_peaks(trig_post, height=threshold,
@@ -613,6 +617,83 @@ class rhdLoader:
             print('Failed to save MNE Raw data. Error written to log.')
             return False
 
+    def save_channel_map(self) -> bool:
+        """Save the channel map as a standalone .npy file in the subject directory.
+
+        This allows the channel map to be updated independently of the raw
+        data (e.g. to correct array type or channel naming) without
+        re-running the full data loading pipeline.  When a standalone
+        channel map file exists, ``BIDSConverter._make_raw_object()``
+        will prefer it over the copy embedded in the HDF5 raw file.
+
+        Returns:
+            True on success, False on failure.
+        """
+        return self._save_rhd_misc_data(
+            self.channel_map, f'sub-{self.subject}_channel_map.npy',
+        )
+
+    def update_impedance(
+        self, threshold: float = 1e6, from_saved: bool = True
+    ) -> bool:
+        """Recompute bad channels from impedance and patch the HDF5 file.
+
+        This is a lightweight alternative to ``load_data()`` for updating
+        bad-channel labels without re-reading or re-saving the full raw
+        data.  Useful after fixing the 1-indexed → 0-indexed channel
+        convention or when the impedance threshold changes.
+
+        Args:
+            threshold: Impedance magnitude above which a channel is
+                considered bad.
+            from_saved: If True (default), read impedance from the
+                previously saved ``.npy`` file.  If False, read the
+                first RHD file to extract impedance metadata (avoids
+                loading full amplifier / trigger / mic data).
+
+        Returns:
+            True on success, False on failure.
+        """
+        subj_dir = self.out_dir / f'sub-{self.subject}'
+        imp_path = subj_dir / f'sub-{self.subject}_impedance.npy'
+        h5_path = subj_dir / f'sub-{self.subject}_raw.h5'
+
+        if from_saved and imp_path.exists():
+            logger.info(f'Loading saved impedance from {imp_path}')
+            impedance = np.load(imp_path)
+        else:
+            logger.info('Reading impedance from RHD file(s)...')
+            rhd_files = self._get_subj_files()
+            if not rhd_files:
+                logger.error('No RHD files found; cannot read impedance.')
+                return False
+            data = read_data(rhd_files[0])
+            impedance = self._get_impedance_magnitudes(data)
+            del data
+            self._save_rhd_misc_data(
+                impedance, f'sub-{self.subject}_impedance.npy',
+            )
+
+        bad_channels = self._get_high_impedance_channels(
+            impedance, threshold=threshold,
+        )
+        logger.info(f'Bad channels (0-indexed): {bad_channels}')
+
+        if not h5_path.exists():
+            logger.error(f'HDF5 file not found: {h5_path}')
+            return False
+
+        try:
+            with h5py.File(h5_path, 'a') as hf:
+                if 'bad_channels' in hf:
+                    del hf['bad_channels']
+                hf.create_dataset('bad_channels', data=bad_channels)
+            logger.info('bad_channels updated in HDF5 file.')
+            return True
+        except Exception as e:
+            logger.error(f'Failed to update bad_channels: {e}')
+            return False
+
     def _save_raw_data(self,
                        data: np.ndarray,
                        fs: float,
@@ -689,17 +770,17 @@ class rhdLoader:
     def _get_high_impedance_channels(
         self, impedance: np.ndarray, threshold: float = 1e6
     ) -> List[int]:
-        """Return list of 1-indexed channels with impedance above threshold.
+        """Return list of 0-indexed channels with impedance above threshold.
 
         Args:
             impedance: 1D array of impedance magnitudes.
             threshold: Threshold above which a channel is considered bad.
 
         Returns:
-            List of 1-indexed channel numbers whose impedance exceeds the
+            List of 0-indexed channel numbers whose impedance exceeds the
             threshold.
         """
-        bad_channels = np.where(impedance > threshold)[0] + 1  # 1-indexed
+        bad_channels = np.where(impedance > threshold)[0]
         return bad_channels.tolist()
 
     def _get_fs(self) -> float:

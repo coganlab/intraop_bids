@@ -30,7 +30,7 @@ import mne
 import numpy as np
 import os
 import pandas as pd
-from mne_bids import BIDSPath, write_raw_bids, write_anat
+from mne_bids import BIDSPath, read_raw_bids, write_raw_bids, write_anat
 
 logger = logging.getLogger(__name__)
 
@@ -54,7 +54,6 @@ EVENTS_COL_ORDER = [
 ]
 
 EVENTS_JSON_METADATA = {
-    "subject": {"Description": "Subject identifier"},
     "trial": {"Description": "Trial number within the task"},
     "onset": {"Description": "Onset time of the event in seconds", "Units": "s"},
     "duration": {
@@ -72,7 +71,6 @@ EVENTS_JSON_METADATA = {
 }
 
 PHONEME_EVENTS_JSON_METADATA = {
-    "subject": {"Description": "Subject identifier"},
     "trial": {"Description": "Trial number within the task"},
     "onset": {
         "Description": "Onset time of the phoneme event in seconds",
@@ -189,17 +187,22 @@ class BIDSConverter:
 
     def _make_raw_object(self):
         """Build an MNE RawArray from the preprocessed HDF5 file."""
-        raw_path = os.path.join(
-            self.source_path,
-            f'sub-{self.subject}',
-            f'sub-{self.subject}_raw.h5',
+        subj_dir = os.path.join(
+            self.source_path, f'sub-{self.subject}',
         )
+        raw_path = os.path.join(subj_dir, f'sub-{self.subject}_raw.h5')
         raw = h5py.File(raw_path, 'r')
 
         raw_data = raw['data'][()]
         self.fs = raw['fs'][()]
-        channel_map = raw['channel_map'][()]
-        self.channel_map = channel_map
+
+        standalone_map = os.path.join(
+            subj_dir, f'sub-{self.subject}_channel_map.npy',
+        )
+        if os.path.exists(standalone_map):
+            self.channel_map = np.load(standalone_map)
+        else:
+            self.channel_map = raw['channel_map'][()]
 
         channel_names = [f'{i}' for i in range(len(raw_data))]
         info = mne.create_info(
@@ -570,6 +573,9 @@ class BIDSConverter:
 
         self.bids_path = bids_path
 
+        # Re-read so self.raw has valid filenames for save_derivative
+        self.raw = read_raw_bids(bids_path, verbose='ERROR')
+
         # Standardise the auto-generated events.tsv
         self._reformat_events_tsv()
 
@@ -848,9 +854,10 @@ def main(
     loader = rhdLoader(
         subject, source_path, fileIDs=fileIDs, array_type=array_type,
     )
-    loader.load_data()
-    loader.make_cue_events()
-    loader.run_mfa(task_name=TASK2MFA[task])
+    loader.update_impedance()
+    # loader.load_data()
+    # loader.make_cue_events()
+    # loader.run_mfa(task_name=TASK2MFA[task])
 
     bids_converter = BIDSConverter(
         source_path=loader.out_dir,
