@@ -280,7 +280,7 @@ def parse_args():
 
     # Word-level txt files
     parser.add_argument(
-        '--stim_txt', default='mfa_adj_stim_words.txt',
+        '--stim_txt', default='mfa_stim_words.txt',
         help='Path to corrected word-level stimulus .txt file',
     )
     parser.add_argument(
@@ -290,11 +290,11 @@ def parse_args():
 
     # Phoneme-level txt files (optional)
     parser.add_argument(
-        '--stim_phon_txt', default='mfa_adj_stim_phons.txt',
+        '--stim_phon_txt', default='mfa_stim_phones.txt',
         help='Path to corrected phoneme-level stimulus .txt file',
     )
     parser.add_argument(
-        '--resp_phon_txt', default='mfa_adj_resp_phons.txt',
+        '--resp_phon_txt', default='mfa_adj_resp_phones.txt',
         help='Path to corrected phoneme-level response .txt file',
     )
 
