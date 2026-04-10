@@ -30,7 +30,7 @@ import mne
 import numpy as np
 import os
 import pandas as pd
-from mne_bids import BIDSPath, read_raw_bids, write_raw_bids, write_anat
+from mne_bids import BIDSPath, write_raw_bids, write_anat
 
 logger = logging.getLogger(__name__)
 
@@ -573,8 +573,10 @@ class BIDSConverter:
 
         self.bids_path = bids_path
 
-        # Re-read so self.raw has valid filenames for save_derivative
-        self.raw = read_raw_bids(bids_path, verbose='ERROR')
+        # Point the in-memory RawArray at the written file so
+        # save_derivative can parse BIDS entities from inst.filenames.
+        written_fpath = bids_path.copy().update(extension='.edf').fpath
+        self.raw._filenames = [str(written_fpath)]
 
         # Standardise the auto-generated events.tsv
         self._reformat_events_tsv()
@@ -854,10 +856,15 @@ def main(
     loader = rhdLoader(
         subject, source_path, fileIDs=fileIDs, array_type=array_type,
     )
-    loader.update_impedance()
-    # loader.load_data()
-    # loader.make_cue_events()
-    # loader.run_mfa(task_name=TASK2MFA[task])
+
+    # standard data loading pipeline
+    loader.load_data()
+    loader.make_cue_events()
+    loader.run_mfa(task_name=TASK2MFA[task])
+
+
+    # # update impedance and bad channels
+    # loader.update_impedance() 
 
     bids_converter = BIDSConverter(
         source_path=loader.out_dir,
