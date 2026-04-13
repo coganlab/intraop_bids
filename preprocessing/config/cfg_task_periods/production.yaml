@@ -6,4 +6,4 @@ full_times: [-1.5, 2.0]
 
 feat_times: [-1.0, 1.5]
 
-sig_times: [-0.25, 0.25]
+sig_times: [-0.5, 0.5]

@@ -3,7 +3,7 @@
 #SBATCH -e /hpc/home/zms14/cworkspace/jobs/extract_epochs/%j.error
 #SBATCH -p common,scavenger
 #SBATCH -c 25
-#SBATCH --mem=128G
+#SBATCH --mem=64G
 
 # ----------------------------
 # Load environment
@@ -15,18 +15,20 @@ conda activate ieeg
 # Arguments
 # ----------------------------
 SUBJECT=""
+TASK="lexical"
 BIDS_ROOT="/hpc/home/zms14/cworkspace/BIDS_1.0_Lexical_µECoG/BIDS"
 FEATURES="high_gamma"
 TASK_PERIOD="production"
 USE_SIG=false
 
-while getopts s:b:f:t:u: flag
+while getopts s:b:t:f:p:u: flag
 do
     case "${flag}" in
         s) SUBJECT=${OPTARG};;
         b) BIDS_ROOT=${OPTARG};;
+        t) TASK=${OPTARG};;
         f) FEATURES=${OPTARG};;
-        t) TASK_PERIOD=${OPTARG};;
+        p) TASK_PERIOD=${OPTARG};;
         u) USE_SIG=${OPTARG};;
     esac
 done
@@ -46,6 +48,7 @@ echo "Extracting epochs for subject ${SUBJECT} with features ${FEATURES} and tas
 python extract_ieeg_epochs.py \
     patient=${SUBJECT} \
     "bids_root='${BIDS_ROOT}'" \
+    task=${TASK} \
     features=${FEATURES} \
     task_periods=${TASK_PERIOD} \
     sig_channels=${USE_SIG} \

@@ -2,6 +2,8 @@ bids_root: ???
 
 patient: ???
 
+task: ???
+
 load_kwargs:
   # passed to raw_from_layout
   preload: true
