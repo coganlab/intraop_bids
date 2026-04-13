@@ -1,0 +1,68 @@
+bids_root: ???
+
+patient: ???
+
+task: ???
+
+# Must match the reference scheme used during epoch extraction
+reference: CAR
+
+# ECoG_Recon directory (FreeSurfer-style layout with elec_recon per subject)
+subjects_dir: ~/cworkspace/ECoG_Recon
+
+# Template brain for average-space projection.
+# Uses spherical surface registration (sphere-outer.reg) instead of
+# Talairach affine, which avoids distortion for micro-ECoG grids.
+average: cvs_avg35_inMNI152
+
+task_periods:
+  - perception
+  - production
+
+features:
+  - high_gamma
+
+# Time window (seconds) within the feature epoch to average over
+# for computing per-channel values.  null = use full epoch.
+time_window: null
+
+# Projection target: "average" for template brain, "subject" for native space
+projection: average
+
+# Brain surface: pial or white
+surface: pial
+
+# Hemisphere: lh, rh, both, or split
+hemi: split
+
+# Remove white-matter electrodes from the plot (subject projection only)
+rm_wm: false
+
+# Colormap for electrode values
+cmap: hot
+
+# Brain transparency (0 = opaque, 1 = fully transparent)
+brain_alpha: 0.4
+
+# Electrode size range [min, max] mapped to feature magnitude
+electrode_size:
+  min: 0.2
+  max: 1.5
+
+# View angles for saved screenshots (azimuth, elevation pairs)
+views:
+  - name: lateral
+    azimuth: 160
+    elevation: 70
+  - name: medial
+    azimuth: 20
+    elevation: 70
+
+# Anatomical region labeling
+label_electrodes: true
+atlas: ".a2009s"
+atlas_radius: 10
+
+# Output format for saved images
+output_format: png
+dpi: 300
