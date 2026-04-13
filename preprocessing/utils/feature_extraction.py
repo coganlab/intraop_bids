@@ -75,6 +75,7 @@ def extract_band(
     # Copy and bandpass
     epochs = epochs.copy().filter(
         frange[0], frange[1],
+        n_jobs=-1,
         **kwargs
     )
 

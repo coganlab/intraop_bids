@@ -17,7 +17,6 @@ import numpy as np
 from scipy.signal import detrend
 from scipy.stats import norm, false_discovery_control
 import mne
-from mne import Epochs
 from scipy.stats import permutation_test
 from joblib import Parallel, delayed
 
