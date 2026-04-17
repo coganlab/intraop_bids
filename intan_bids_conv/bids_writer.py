@@ -840,10 +840,9 @@ class BIDSConverter:
 
 def main(
     source_path: Path,
-    bids_root: Path,
     subject: str,
     task: str,
-    fileIDs: Optional[list] = None,
+    fileIDs: Optional[tuple] = None,
     array_type: Optional[str] = None,
     recon_path: Optional[Path] = None,
 ):
@@ -853,18 +852,25 @@ def main(
     except ImportError:
         from .dataloaders import rhdLoader
 
+    if task == 'lexical':
+        bids_root = Path.home() / 'Box' / 'CoganLab' / 'BIDS_1.0_Lexical_\u00b5ECoG' / 'BIDS'
+    elif task == 'phoneme':
+        bids_root = Path.home() / 'Box' / 'CoganLab' / 'BIDS_1.0_Phoneme_Sequence_uECoG' / 'BIDS'
+    else:
+        raise ValueError(f'Invalid task: {task}')
+
     loader = rhdLoader(
         subject, source_path, fileIDs=fileIDs, array_type=array_type,
     )
 
     # standard data loading pipeline
-    loader.load_data()
-    loader.make_cue_events()
-    loader.run_mfa(task_name=TASK2MFA[task])
+    # loader.load_data()
+    # loader.make_cue_events()
+    # loader.run_mfa(task_name=TASK2MFA[task])
 
 
-    # # update impedance and bad channels
-    # loader.update_impedance() 
+    # update impedance and bad channels
+    loader.update_impedance() 
 
     bids_converter = BIDSConverter(
         source_path=loader.out_dir,
@@ -893,27 +899,21 @@ if __name__ == "__main__":
         ),
     )
     parser.add_argument(
-        "--bids-root",
-        default=(
-            Path.home() / "Box" / "CoganLab"
-            / "BIDS_1.0_Lexical_\u00b5ECoG" / "BIDS"
-        ),
-        type=Path,
-        help='Root directory to save the BIDS dataset',
-    )
-    parser.add_argument(
         "--subject",
         default=None,
         help='Subject identifier (e.g., S41)',
     )
     parser.add_argument(
         "--fileIDs",
-        nargs='+',
+        nargs=2,
+        type=int,
         default=None,
+        metavar=('START', 'END'),
         help=(
-            'List of file IDs to process indicating the RHD files to process '
-            'when ordered alphabetically in the source data directory (e.g. '
-            'for the 5th through 10th files, use --fileIDs 5 6 7 8 9 10)'
+            'Inclusive start and end (1-indexed) of the contiguous range of '
+            'RHD files to process when ordered alphabetically in the source '
+            'data directory (e.g. for the 5th through 10th files, use '
+            '--fileIDs 5 10)'
         ),
     )
     parser.add_argument(
