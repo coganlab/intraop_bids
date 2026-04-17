@@ -185,6 +185,16 @@ class BIDSConverter:
     # Raw object construction
     # ------------------------------------------------------------------
 
+    def _build_channel_index_to_name(self):
+        """Invert the channel map to map each channel index to an ``R{row}-C{col}`` name."""
+        index_to_name = {}
+        for row_idx in range(self.channel_map.shape[0]):
+            for col_idx in range(self.channel_map.shape[1]):
+                ch_num = self.channel_map[row_idx, col_idx]
+                if not np.isnan(ch_num):
+                    index_to_name[int(ch_num)] = f"R{row_idx}-C{col_idx}"
+        return index_to_name
+
     def _make_raw_object(self):
         """Build an MNE RawArray from the preprocessed HDF5 file."""
         subj_dir = os.path.join(
@@ -204,13 +214,20 @@ class BIDSConverter:
         else:
             self.channel_map = raw['channel_map'][()]
 
-        channel_names = [f'{i}' for i in range(len(raw_data))]
+        self._ch_index_to_name = self._build_channel_index_to_name()
+        channel_names = [
+            self._ch_index_to_name.get(i, f'{i}')
+            for i in range(len(raw_data))
+        ]
         info = mne.create_info(
             ch_names=channel_names,
             sfreq=self.fs,
             ch_types='ecog',
         )
-        info['bads'] = [str(ch) for ch in raw['bad_channels'][()]]
+        info['bads'] = [
+            self._ch_index_to_name.get(int(ch), str(ch))
+            for ch in raw['bad_channels'][()]
+        ]
         raw.close()
 
         raw_data = raw_data.astype(np.float32)
@@ -245,7 +262,7 @@ class BIDSConverter:
                 f"RAS file not found: {ras_file}, "
                 "using custom montage as placeholder"
             )
-            montage = self.make_custom_montage(self.channel_map)
+            montage = self.make_custom_montage()
             self.raw.set_montage(montage)
             return self.raw
         try:
@@ -254,13 +271,12 @@ class BIDSConverter:
         except Exception as e:
             print(f"Error applying RAS montage: {e}")
             print("Falling back to custom montage...")
-            montage = self.make_custom_montage(self.channel_map)
+            montage = self.make_custom_montage()
             self.raw.set_montage(montage)
 
         return self.raw
 
-    @staticmethod
-    def load_ras_montage(ras_file):
+    def load_ras_montage(self, ras_file):
         """Load an electrode RAS montage from a whitespace-delimited text file."""
         from mne.channels import make_dig_montage
         from mne.io.constants import FIFF
@@ -274,8 +290,11 @@ class BIDSConverter:
 
         orig_nums = df['number'].astype(int).tolist()
         unique_sorted = sorted(set(orig_nums))
-        num_map = {old: i + 1 for i, old in enumerate(unique_sorted)}
-        ch_names = [str(num_map[n]) for n in orig_nums]
+        num_map = {old: i for i, old in enumerate(unique_sorted)}
+        ch_names = [
+            self._ch_index_to_name.get(num_map[n], str(num_map[n]))
+            for n in orig_nums
+        ]
         pos = df[['x', 'y', 'z']].values
 
         montage = make_dig_montage(
@@ -289,11 +308,11 @@ class BIDSConverter:
 
         return montage
 
-    @staticmethod
-    def make_custom_montage(channel_map):
+    def make_custom_montage(self):
         """Create a synthetic 2D-grid montage as a placeholder."""
         from mne.channels import Layout, make_dig_montage
 
+        channel_map = self.channel_map
         n_rows, n_cols = channel_map.shape
         pos, names = [], []
 
@@ -305,7 +324,7 @@ class BIDSConverter:
                     width = 1 / n_cols
                     height = 1 / n_rows
                     pos.append([x, y, width, height])
-                    names.append(f'{int(channel_map[i, j])}')
+                    names.append(f'R{i}-C{j}')
 
         pos = np.array(pos)
         box = np.array([0, 0, 1, 1])
@@ -833,6 +852,172 @@ class BIDSConverter:
 
         return derivative_path
 
+    # ------------------------------------------------------------------
+    # In-place channel renaming on existing BIDS output
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _rename_edf_channels_by_index(edf_path, index_to_name, verbose=True):
+        """Rename EDF channels by position index, ignoring current labels."""
+        edf_path = Path(edf_path)
+        if not edf_path.exists():
+            if verbose:
+                print(f"EDF not found, skipping: {edf_path}")
+            return
+
+        with open(edf_path, 'r+b') as f:
+            f.seek(252)
+            ns = int(f.read(4).decode('ascii').strip())
+
+            for i in range(ns):
+                if i not in index_to_name:
+                    continue
+                offset = 256 + i * 16
+                new_label = index_to_name[i].ljust(16)[:16]
+                f.seek(offset)
+                f.write(new_label.encode('ascii'))
+
+        if verbose:
+            print(f"Updated EDF channel labels: {edf_path}")
+
+    @staticmethod
+    def _rename_tsv_name_by_index(tsv_path, index_to_name, verbose=True):
+        """Rename the ``name`` column by row index, ignoring current values."""
+        tsv_path = Path(tsv_path)
+        if not tsv_path.exists():
+            if verbose:
+                print(f"TSV not found, skipping: {tsv_path}")
+            return
+
+        df = pd.read_csv(tsv_path, sep='\t')
+        if 'name' not in df.columns:
+            if verbose:
+                print(f"No 'name' column in {tsv_path}, skipping")
+            return
+
+        df['name'] = [
+            index_to_name.get(i, df.at[i, 'name'])
+            for i in range(len(df))
+        ]
+        df.to_csv(tsv_path, sep='\t', index=False)
+
+        if verbose:
+            print(f"Updated TSV channel names: {tsv_path}")
+
+    @staticmethod
+    def _rename_chanmap_tsv(tsv_path, index_to_name, verbose=True):
+        """Rename the ``name`` column using the ``channel_number`` column as key."""
+        tsv_path = Path(tsv_path)
+        if not tsv_path.exists():
+            if verbose:
+                print(f"TSV not found, skipping: {tsv_path}")
+            return
+
+        df = pd.read_csv(tsv_path, sep='\t')
+        if 'name' not in df.columns or 'channel_number' not in df.columns:
+            if verbose:
+                print(f"Missing columns in {tsv_path}, skipping")
+            return
+
+        df['name'] = df['channel_number'].apply(
+            lambda x: index_to_name.get(int(x), str(int(x))),
+        )
+        df.to_csv(tsv_path, sep='\t', index=False)
+
+        if verbose:
+            print(f"Updated channel map TSV: {tsv_path}")
+
+    @staticmethod
+    def _strip_acq_run(filename):
+        """Remove ``_acq-*`` and ``_run-*`` entities from a BIDS filename."""
+        return re.sub(r'_(?:acq|run)-[^_.]+', '', filename)
+
+    def update_bids_channel_names(self, verbose=True):
+        """Rename channels in an existing BIDS dataset to ``R{row}-C{col}`` format.
+
+        Assigns names based on each channel's **position index** in the file
+        (0-indexed), making the result independent of whatever the current
+        names happen to be.  Also strips ``_acq-*`` and ``_run-*`` entities
+        from BIDS filenames.
+        """
+        subj_dir = os.path.join(
+            self.source_path, f'sub-{self.subject}',
+        )
+        standalone_map = os.path.join(
+            subj_dir, f'sub-{self.subject}_channel_map.npy',
+        )
+        if os.path.exists(standalone_map):
+            self.channel_map = np.load(standalone_map)
+        else:
+            raw_path = os.path.join(
+                subj_dir, f'sub-{self.subject}_raw.h5',
+            )
+            with h5py.File(raw_path, 'r') as f:
+                self.channel_map = f['channel_map'][()]
+
+        self._ch_index_to_name = self._build_channel_index_to_name()
+        subject_id = self.subject.lstrip('sub-')
+
+        # -- rename channels by position index --
+
+        edf_files = list(self.bids_root.rglob(
+            f'sub-{subject_id}*_ieeg.edf',
+        ))
+        for f in edf_files:
+            self._rename_edf_channels_by_index(
+                f, self._ch_index_to_name, verbose,
+            )
+
+        for suffix in ('channels', 'electrodes'):
+            tsv_files = list(self.bids_root.rglob(
+                f'sub-{subject_id}*_{suffix}.tsv',
+            ))
+            for f in tsv_files:
+                self._rename_tsv_name_by_index(
+                    f, self._ch_index_to_name, verbose,
+                )
+
+        chanmap_tsvs = list(self.bids_root.rglob(
+            f'sub-{subject_id}*channelMap*.tsv',
+        ))
+        for f in chanmap_tsvs:
+            self._rename_chanmap_tsv(
+                f, self._ch_index_to_name, verbose,
+            )
+
+        # -- strip acq/run entities from filenames --
+
+        subject_files = sorted(
+            self.bids_root.rglob(f'sub-{subject_id}*'),
+            reverse=True,
+        )
+        for f in subject_files:
+            if not f.is_file():
+                continue
+            new_name = self._strip_acq_run(f.name)
+            if new_name != f.name:
+                new_path = f.parent / new_name
+                f.replace(new_path)
+                if verbose:
+                    print(f"Renamed: {f.name} -> {new_name}")
+
+        scans_tsv = (
+            self.bids_root / f'sub-{subject_id}'
+            / f'sub-{subject_id}_scans.tsv'
+        )
+        if scans_tsv.exists():
+            df = pd.read_csv(scans_tsv, sep='\t')
+            if 'filename' in df.columns:
+                df['filename'] = df['filename'].apply(
+                    self._strip_acq_run,
+                )
+                df.to_csv(scans_tsv, sep='\t', index=False)
+                if verbose:
+                    print(f"Updated scans.tsv paths: {scans_tsv}")
+
+        if verbose:
+            print("Channel name update complete.")
+
 
 # ---------------------------------------------------------------------------
 # CLI entry point
@@ -863,13 +1048,13 @@ def main(
         subject, source_path, fileIDs=fileIDs, array_type=array_type,
     )
 
-    # standard data loading pipeline
+    # # standard data loading pipeline
     # loader.load_data()
     # loader.make_cue_events()
     # loader.run_mfa(task_name=TASK2MFA[task])
 
 
-    # update impedance and bad channels
+    # # update impedance and bad channels
     loader.update_impedance() 
 
     bids_converter = BIDSConverter(
@@ -880,7 +1065,10 @@ def main(
         recon_path=recon_path,
     )
 
-    bids_converter.convert_to_bids()
+    # bids_converter.convert_to_bids()
+
+    # rename channels in existing BIDS output to R{row}-C{col} format
+    bids_converter.update_bids_channel_names()
 
 
 if __name__ == "__main__":
