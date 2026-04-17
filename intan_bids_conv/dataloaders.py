@@ -13,7 +13,7 @@ import noisereduce as nr
 import matplotlib.pyplot as plt
 import mne
 import h5py
-from typing import Any, Dict, Iterable, List, Optional, Sequence, Union
+from typing import Any, Dict, List, Optional, Sequence, Tuple, Union
 
 from load_intan_rhd_format.load_intan_rhd_format import read_data
 
@@ -30,7 +30,7 @@ class rhdLoader:
                  subject: str,
                  rhd_dir: Optional[Union[str, Path]] = None,
                  out_dir: Optional[Union[str, Path]] = None,
-                 fileIDs: Optional[Iterable[int]] = None,
+                 fileIDs: Optional[tuple[int, int]] = None,
                  array_type: Optional[str] = None) -> None:
         """Initialize an RHD data loader.
 
@@ -40,9 +40,9 @@ class rhdLoader:
                 If None, a file dialog will be opened to select a directory.
             out_dir: Output base directory where processed files will be
                 written. If None, the default BIDS processing path is used.
-            fileIDs: Optional iterable of integer indices specifying which
-                RHD files to include (1-indexed by order). If None all files
-                are used.
+            fileIDs: Optional (start, end) tuple of 1-indexed inclusive bounds
+                specifying the contiguous range of RHD files to include when
+                ordered alphabetically. If None all files are used.
             array_type: Name of the electrode array channel map to use
                 (e.g. '128-strip', '256-grid', '256-strip', or 'hybrid-strip').
                 Default is None to prompt the user to select an array type.
@@ -60,10 +60,10 @@ class rhdLoader:
             rhd_dir = filedialog.askdirectory(
                 title=f'Select RHD data directory for subject {subject}')
         self.rhd_dir = Path(rhd_dir)
-        self.fileIDs = [int(f) for f in fileIDs] if fileIDs is not None else None
+        self.fileIDs = (int(fileIDs[0]), int(fileIDs[1])) if fileIDs is not None else None
 
         if array_type is None:
-            arr_types = ['128-strip', '256-grid', '256-strip', '1024-grid', 'hybrid-strip']
+            arr_types = ['128-strip', '256-grid', '256-strip', '256-strip-old', '1024-grid', 'hybrid-strip']
             types = '/'.join(arr_types)
             resp = input(f'Please specify array type {types}:')
             if resp in arr_types:
@@ -456,9 +456,10 @@ class rhdLoader:
         rhd_files = sorted(self.rhd_dir.glob(pattern))
         # only keep files selected by numerical IDs corresponding to order
         if self.fileIDs is not None:
-            logger.info(f'Using RHD files: {self.fileIDs}')
-            rhd_files = [f for i, f in enumerate(rhd_files) if i+1 in
-                         self.fileIDs]
+            start, end = self.fileIDs
+            logger.info(f'Using RHD files: {start} through {end}')
+            rhd_files = [f for i, f in enumerate(rhd_files)
+                         if start <= i + 1 <= end]
         logger.info(f'Found files: {[f.name for f in rhd_files]}')
         return rhd_files
 
@@ -880,7 +881,7 @@ class rhdLoader:
         logger.info(f'Subject directory set to: {subj_dir}')
 
 
-def main(data_dir, subject, fileIDs, array_type='None',
+def main(data_dir, subject, fileIDs=None, array_type='None',
          task='lexical_repeat_intraop'):
     loader = rhdLoader(subject, data_dir, fileIDs=fileIDs,
                        array_type=array_type)
