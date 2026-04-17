@@ -136,6 +136,14 @@ def _update_word_events(bids_path, subject, fs, stim_txt, resp_txt):
     )
 
     updated_df = remove_orphan_stimuli(updated_df)
+
+    # check that number of stimulus and response events are the same after removing orphan stimuli
+    stim_events_updated = updated_df[updated_df['trial_type'] == 'stimulus']
+    resp_events_updated = updated_df[updated_df['trial_type'] == 'response']
+    if len(stim_events_updated) != len(resp_events_updated):
+        logger.error('Number of stimulus and response events are not the same after removing orphan stimuli')
+        return
+    
     updated_df['trial'] = np.ceil(
         np.arange(1, len(updated_df) + 1) / 2
     ).astype(int)
@@ -198,6 +206,14 @@ def _update_phoneme_events(
         .reset_index(drop=True)
     )
     events_df = remove_orphan_stimuli(events_df)
+    
+    # check that number of stimulus and response events are the same after removing orphan stimuli
+    stim_events_updated = events_df[events_df['trial_type'] == 'stimulus']
+    resp_events_updated = events_df[events_df['trial_type'] == 'response']
+    if len(stim_events_updated) != len(resp_events_updated):
+        logger.error('Number of stimulus and response events are not the same after removing orphan stimuli')
+        return
+    
     events_df['trial'] = np.ceil(
         np.arange(1, len(events_df) + 1) / (n_phons * 2)
     ).astype(int)
