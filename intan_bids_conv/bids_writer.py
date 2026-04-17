@@ -2,57 +2,164 @@
 ECoG/iEEG to BIDS conversion utilities built on mne-bids.
 
 Pipeline overview
-- Load subject-specific source files using loader helpers in `loaders.py`.
-- Load experiment/session metadata (`load_experiment_info()`), iEEG raw
-  data (`load_ieeg_data()`), events (`load_event_data()`), and optional
-  microphone audio (`load_audio_data()`).
-- Process events and update the `mne.io.Raw` object via
-  `BIDSConverter.update_raw_object()`:
-  - Convert event structures to MNE-style `events` array and `event_id`.
-  - Ensure the raw has a montage. If a subject RAS montage exists in
-    `recon_path/<sub>/elec_recon/*RAS_brainshifted.txt`, load it; otherwise
-    generate a custom montage based on the provided channel map.
-- Create a BIDS directory tree under `bids_root` (session-less by default),
-  and write iEEG data to BIDS with `write_raw_bids()`.
-- Convert anatomical data (T1w and CT when present) into `anat/`, writing
-  placeholder sidecar JSONs to be completed later (e.g., with fiducials).
-- Optionally save microphone audio as a derivative in
-  `derivatives/audio/sub-<label>/`.
+- Load raw Intan RHD data via ``dataloaders.rhdLoader``, which handles
+  loading, downsampling, trigger detection, and MFA alignment.
+- Build an MNE Raw object from the processed HDF5 output and attach
+  word-level annotations from MFA token files.
+- Ensure the raw has a montage (RAS-based or synthetic placeholder).
+- Write iEEG data to a BIDS directory tree with ``write_raw_bids()``.
+- Post-process the auto-generated events.tsv to a standardised format
+  with columns: subject, trial, onset, duration, value, trial_type, sample.
+- Write phoneme-level events and a copy of the raw data to a
+  ``derivatives/phonemeLevel/`` folder for phoneme-level analysis.
+- Convert anatomical data (T1w and CT when present) into ``anat/``.
+- Optionally save microphone audio as a derivative.
 
 Notes and assumptions
-- The code relies on helper loaders in `loaders.py` and configuration from
-  `config.py`.
-- Some fields (e.g., session handling) are currently minimal or implicit.
 - The RAS montage file is expected to be whitespace-delimited with columns:
   prefix, number, x, y, z, hemisphere, grid.
 """
+import json
+import logging
+import re
 from pathlib import Path
 from typing import Optional, Union
-from mne_bids import BIDSPath, write_raw_bids, write_anat
-import numpy as np
-import h5py
-import os
-import mne
-import pandas as pd
-from dataloaders import rhdLoader
 
+import h5py
+import mne
+import numpy as np
+import os
+import pandas as pd
+from mne_bids import BIDSPath, write_raw_bids, write_anat
+
+logger = logging.getLogger(__name__)
 
 TASK2MFA = {
     "lexical": "lexical_repeat_intraop",
     "phoneme": "phoneme_sequencing",
 }
 
+NPHONS = {
+    "lexical": 5,
+    "phoneme": 3,
+}
+
+PS2ARPA = {
+    'a': 'AA', 'ae': 'EH', 'i': 'IY', 'u': 'UW', 'b': 'B', 'p': 'P',
+    'v': 'V', 'g': 'G', 'k': 'K', 'UH': 'UW', 'AE': 'EH',
+}
+
+EVENTS_COL_ORDER = [
+    'subject', 'trial', 'onset', 'duration', 'value', 'trial_type', 'sample',
+]
+
+EVENTS_JSON_METADATA = {
+    "trial": {"Description": "Trial number within the task"},
+    "onset": {"Description": "Onset time of the event in seconds", "Units": "s"},
+    "duration": {
+        "Description": "Duration of the event in seconds", "Units": "s",
+    },
+    "value": {"Description": "Word label for the event"},
+    "trial_type": {
+        "Description": "Type of event",
+        "Levels": {
+            "stimulus": "Auditory stimulus presentation",
+            "response": "Subject verbal response",
+        },
+    },
+    "sample": {"Description": "Onset sample index in the raw data"},
+}
+
+PHONEME_EVENTS_JSON_METADATA = {
+    "trial": {"Description": "Trial number within the task"},
+    "onset": {
+        "Description": "Onset time of the phoneme event in seconds",
+        "Units": "s",
+    },
+    "duration": {
+        "Description": "Duration of the phoneme event in seconds",
+        "Units": "s",
+    },
+    "value": {"Description": "Phoneme label (ARPAbet) for the event"},
+    "trial_type": {
+        "Description": (
+            "Type and ordinal position of the phoneme within its trial "
+            "(e.g. stimulus/1 for the first phoneme of the stimulus)"
+        ),
+    },
+    "sample": {"Description": "Onset sample index in the raw data"},
+}
+
+
+# ---------------------------------------------------------------------------
+# Helper functions
+# ---------------------------------------------------------------------------
+
+def remove_arpabet_stress(phoneme: str) -> str:
+    """Strip numeric stress markers from an ARPAbet phoneme (e.g. AH0 -> AH)."""
+    return re.sub(r'\d', '', phoneme)
+
+
+def remove_orphan_stimuli(events_df, response_window_sec=3.0):
+    """Drop stimulus rows that lack a matching response within *response_window_sec*."""
+    base_types = events_df['trial_type'].str.split('/').str[0]
+    is_stim = base_types == 'stimulus'
+    is_resp = base_types == 'response'
+
+    stim_onsets = events_df.loc[is_stim, 'onset'].values
+    resp_onsets = events_df.loc[is_resp, 'onset'].values
+
+    if len(resp_onsets) == 0:
+        return events_df[~is_stim].reset_index(drop=True)
+
+    has_response = np.any(
+        (resp_onsets[None, :] > stim_onsets[:, None])
+        & (resp_onsets[None, :] <= stim_onsets[:, None] + response_window_sec),
+        axis=1,
+    )
+
+    orphan_mask = pd.Series(False, index=events_df.index)
+    orphan_mask.iloc[np.where(is_stim)[0][~has_response]] = True
+    return events_df[~orphan_mask].reset_index(drop=True)
+
+
+def phon_txt2df(txt_path, trial_type, subject, n_phons, fs, task):
+    """Convert a phoneme-level MFA text file to a BIDS events DataFrame."""
+    df = pd.read_csv(txt_path, sep='\t', names=['onset', 'offset', 'phoneme'])
+    df['duration'] = df['offset'] - df['onset']
+
+    if task == 'lexical':
+        df['value'] = df['phoneme'].apply(remove_arpabet_stress)
+    else:
+        df['value'] = df['phoneme'].apply(
+            lambda x: PS2ARPA.get(
+                remove_arpabet_stress(x), remove_arpabet_stress(x)
+            )
+        )
+
+    df['subject'] = subject
+    df['sample'] = (df['onset'] * fs).astype(int)
+    df['trial'] = (np.arange(len(df)) // n_phons) + 1
+    position = (np.arange(len(df)) % n_phons) + 1
+    df['trial_type'] = [f'{trial_type}/{p}' for p in position]
+    return df[EVENTS_COL_ORDER]
+
+
+# ---------------------------------------------------------------------------
+# BIDSConverter
+# ---------------------------------------------------------------------------
 
 class BIDSConverter:
-    """
-    Converter for writing iEEG/ECoG data to BIDS.
+    """Converter for writing iEEG/ECoG data to BIDS.
 
     Responsibilities
     - Manage source paths, subject/task identifiers, and optional audio/anat paths.
-    - Load experiment metadata, iEEG raw, events, and optional audio.
-    - Process events and ensure `raw` has a montage (RAS-based or synthetic).
-    - Create a BIDS directory structure and write iEEG data using `mne-bids`.
-    - Convert available anatomical images (T1w, CT) and create placeholder JSON sidecars.
+    - Process events and ensure ``raw`` has a montage (RAS-based or synthetic).
+    - Create a BIDS directory structure and write iEEG data using ``mne-bids``.
+    - Post-process events.tsv to a standardised column format.
+    - Write phoneme-level events and raw data to a derivatives folder.
+    - Convert available anatomical images (T1w, CT) and create placeholder
+      JSON sidecars.
     """
 
     def __init__(
@@ -63,205 +170,151 @@ class BIDSConverter:
         bids_root: Optional[Union[str, Path]] = None,
         recon_path: Optional[Union[str, Path]] = None,
     ):
-        """
-        Initialize a converter bound to the given subject/task and paths.
-
-        Args
-        - subject: Subject label (e.g., "S26").
-        - task: BIDS task label (e.g., "phoneme").
-        - source_path: Root directory containing the source data to convert.
-        - bids_root: Root directory for the output BIDS dataset. If None, must
-          be provided later to `convert_to_bids()`.
-        - recon_path: Optional parent directory containing anatomical data
-          (e.g., `ECoG_Recon/<sub>/...`).
-
-        Notes
-        - Paths should be valid and readable. Audio/anat are optional.
-        - Session handling is not explicit; current flow assumes session-less.
-        """
         self.subject = subject
         self.task = task
         self.source_path = Path(source_path)
         self.recon_path = Path(recon_path)
         self.bids_root = Path(bids_root)
 
-        # Will be populated when data is loaded
         self.experiment_info = None
         self.raw = None
         self.events = None
         self.bids_path = None
 
+    # ------------------------------------------------------------------
+    # Raw object construction
+    # ------------------------------------------------------------------
 
-    def _make_raw_object(
-        self,
-    ):
-        """
-        Make a raw object from the raw data.
-        """
+    def _build_channel_index_to_name(self):
+        """Invert the channel map to map each channel index to an ``R{row}-C{col}`` name."""
+        index_to_name = {}
+        for row_idx in range(self.channel_map.shape[0]):
+            for col_idx in range(self.channel_map.shape[1]):
+                ch_num = self.channel_map[row_idx, col_idx]
+                if not np.isnan(ch_num):
+                    index_to_name[int(ch_num)] = f"R{row_idx}-C{col_idx}"
+        return index_to_name
 
-        raw_path = os.path.join(self.source_path,
-                                f'sub-{self.subject}',
-                                f'sub-{self.subject}_raw.h5')
+    def _make_raw_object(self):
+        """Build an MNE RawArray from the preprocessed HDF5 file."""
+        subj_dir = os.path.join(
+            self.source_path, f'sub-{self.subject}',
+        )
+        raw_path = os.path.join(subj_dir, f'sub-{self.subject}_raw.h5')
         raw = h5py.File(raw_path, 'r')
 
         raw_data = raw['data'][()]
         self.fs = raw['fs'][()]
-        channel_map = raw['channel_map'][()]
-        self.channel_map = channel_map
 
-        # 0-indexed channels
-        channel_names = [f'{i}' for i in range(len(raw_data))]
+        standalone_map = os.path.join(
+            subj_dir, f'sub-{self.subject}_channel_map.npy',
+        )
+        if os.path.exists(standalone_map):
+            self.channel_map = np.load(standalone_map)
+        else:
+            self.channel_map = raw['channel_map'][()]
+
+        self._ch_index_to_name = self._build_channel_index_to_name()
+        channel_names = [
+            self._ch_index_to_name.get(i, f'{i}')
+            for i in range(len(raw_data))
+        ]
         info = mne.create_info(
             ch_names=channel_names,
             sfreq=self.fs,
-            ch_types='ecog'
+            ch_types='ecog',
         )
-        info['bads'] = [str(ch) for ch in raw['bad_channels'][()]]
-        # make a raw object
+        info['bads'] = [
+            self._ch_index_to_name.get(int(ch), str(ch))
+            for ch in raw['bad_channels'][()]
+        ]
         raw.close()
-        # release raw_data from memory
+
         raw_data = raw_data.astype(np.float32)
-        raw = mne.io.RawArray(
-            data = raw_data * 1e-6,
-            info = info,
-        )
+        raw = mne.io.RawArray(data=raw_data * 1e-6, info=info)
         del raw_data
-        import gc; gc.collect()
+        import gc
+        gc.collect()
 
         return raw
 
+    # ------------------------------------------------------------------
+    # Annotations / montage
+    # ------------------------------------------------------------------
 
-    def update_raw_object(self,
-                          ann):
-        """
-        Update the `raw` object with processed events and ensure montage.
-
-        Steps
-        - Build `events` and `event_id` via `handling_event()` and attach to this instance.
-        - If no montage is present on `raw`, attempt to add one via
-          `add_montage_to_raw()` (RAS montage if available, otherwise custom).
-
-        Returns
-        - mne.io.Raw: The updated raw instance.
-        """
-
-        sfreq = float(self.raw.info['sfreq'])
-        
+    def update_raw_object(self, ann):
+        """Set annotations on *self.raw* and ensure a montage is present."""
         self.raw.set_annotations(ann)
-
-        # make custom montage if no montage is found in the raw object
         if self.raw.info.get_montage() is None:
             self.raw = self.add_montage_to_raw()
 
-        return
-
     def add_montage_to_raw(self):
-        """
-        Add a montage to `raw` using subject RAS file when present, else fallback.
-
-        Logic
-        - Construct a path to `<recon_path>/<sub>/elec_recon/*RAS_brainshifted.txt`.
-        - If RAS file is missing or fails to load, make a synthetic montage from
-          the channel map (layout-based) with a placeholder coordinate frame.
-
-        Returns
-        - mne.io.Raw: The raw instance with montage set.
-        """
-        # load RAS file from anat directory
+        """Add a montage using the subject RAS file, falling back to a synthetic grid."""
         ras_file = os.path.join(
             self.recon_path,
             f"{self.subject}",
             "elec_recon",
-            f"{self.subject}_elec_locations_RAS_brainshifted.txt"
+            f"{self.subject}_elec_locations_RAS_brainshifted.txt",
         )
 
-        # First check if file exists
         if not os.path.exists(ras_file):
-            print(f"RAS file not found: {ras_file}, using custom montage as placeholder")
-            montage = self.make_custom_montage(self.channel_map)
+            print(
+                f"RAS file not found: {ras_file}, "
+                "using custom montage as placeholder"
+            )
+            montage = self.make_custom_montage()
             self.raw.set_montage(montage)
             return self.raw
         try:
-            # Try to load and set the RAS montage
             montage = self.load_ras_montage(ras_file)
-            
             self.raw.set_montage(montage)
         except Exception as e:
-            # If any error occurs (e.g., channel mismatch, invalid format), fall back to custom montage
             print(f"Error applying RAS montage: {e}")
             print("Falling back to custom montage...")
-            montage = self.make_custom_montage(self.channel_map)
+            montage = self.make_custom_montage()
             self.raw.set_montage(montage)
 
         return self.raw
 
-    @staticmethod
-    def load_ras_montage(ras_file):
-        """
-        Load a RAS montage and attach hemisphere labels.
-
-        Args
-        - ras_file: Path to a whitespace-delimited text file with columns:
-          prefix, number, x, y, z, hemisphere, grid. Coordinates expected in
-          RAS space.
-
-        Returns
-        - mne.channels.DigMontage: Electrode positions tagged with hemisphere.
-        """
-        import pandas as pd
+    def load_ras_montage(self, ras_file):
+        """Load an electrode RAS montage from a whitespace-delimited text file."""
         from mne.channels import make_dig_montage
         from mne.io.constants import FIFF
 
-        # Read the RAS file with proper column names
         df = pd.read_csv(
             ras_file,
-            delim_whitespace=True,
+            sep=r'\s+',
             header=None,
-            names=['prefix', 'number', 'x', 'y', 'z', 'hemisphere', 'grid']
+            names=['prefix', 'number', 'x', 'y', 'z', 'hemisphere', 'grid'],
         )
 
-        # Create channel names by remapping existing numbers to consecutive 1..N
-        # while preserving the original row order.
         orig_nums = df['number'].astype(int).tolist()
         unique_sorted = sorted(set(orig_nums))
-        num_map = {old: i + 1 for i, old in enumerate(unique_sorted)}
-        ch_names = [str(num_map[n]) for n in orig_nums]
-
-        # Get coordinates in meters (MNE uses meters)
+        num_map = {old: i for i, old in enumerate(unique_sorted)}
+        ch_names = [
+            self._ch_index_to_name.get(num_map[n], str(num_map[n]))
+            for n in orig_nums
+        ]
         pos = df[['x', 'y', 'z']].values
 
-        # Create montage with RAS coordinates
         montage = make_dig_montage(
             ch_pos=dict(zip(ch_names, pos)),
-            coord_frame='ras'
+            coord_frame='ras',
         )
 
-        # Add hemisphere information to the montage's channel dictionary
         for ch, hemi in zip(montage.dig, df['hemisphere']):
             if ch['kind'] == FIFF.FIFFV_POINT_EEG:
-                ch['hemisphere'] = hemi.upper()  # Ensure uppercase for BIDS compliance
+                ch['hemisphere'] = hemi.upper()
 
         return montage
 
-    @staticmethod
-    def make_custom_montage(channel_map):
-        """
-        Create a synthetic montage from `experiment_info['channel_map']`.
-
-        Notes
-        - Generates a 2D grid layout and maps channels to [x, y, 0] placeholders.
-        - The coordinate frame is set to 'ras' as a pragmatic placeholder to
-          satisfy downstream checks; these are not real RAS coordinates.
-
-        Returns
-        - mne.channels.DigMontage: Synthetic montage with 2D layout positions.
-        """
+    def make_custom_montage(self):
+        """Create a synthetic 2D-grid montage as a placeholder."""
         from mne.channels import Layout, make_dig_montage
-        # channel_map = experiment_info['channel_map']
-        n_rows, n_cols = channel_map.shape
 
-        pos = []
-        names = []
+        channel_map = self.channel_map
+        n_rows, n_cols = channel_map.shape
+        pos, names = [], []
 
         for i in range(n_rows):
             for j in range(n_cols):
@@ -271,131 +324,186 @@ class BIDSConverter:
                     width = 1 / n_cols
                     height = 1 / n_rows
                     pos.append([x, y, width, height])
-                    names.append(f'{int(channel_map[i, j])}')
+                    names.append(f'R{i}-C{j}')
 
         pos = np.array(pos)
-        box = np.array([0, 0, 1, 1])  # Define the bounding box
-
+        box = np.array([0, 0, 1, 1])
         layout = Layout(
-            pos=pos,
-            names=names,
-            kind='custom',
-            ids=np.arange(1, len(names) + 1),
-            box=box
+            pos=pos, names=names, kind='custom',
+            ids=np.arange(1, len(names) + 1), box=box,
         )
-        ch_pos = {name: [x, y, 0] for name, (x, y, _, _) in zip(layout.names, layout.pos)}
-        # remember this is a fake montage, the coord_frame is set to be 'ras' to pass the check
-        montage = make_dig_montage(ch_pos, coord_frame='ras')
 
+        ch_pos = {
+            name: [x, y, 0]
+            for name, (x, y, _, _) in zip(layout.names, layout.pos)
+        }
+        montage = make_dig_montage(ch_pos, coord_frame='ras')
         return montage
 
-    def handling_event(self):
-        """
-        Convert trial/event structures to MNE `events` and `event_id`.
-
-        Event processing
-        - Pull config from `DEFAULT_EVENT_PROCESSING['bids_events_columns']`.
-        - Drop trials with empty `trial_type` entries.
-        - Convert event onsets to sample indices using `raw.info['sfreq']`,
-          applying a factor of `sfreq/3e4` to match the event time base.
-        - Build `event_id` by enumerating unique trial types.
-
-        Returns
-        - (events, event_id):
-          - events: int array of shape (n_events, 3) [sample, 0, code].
-          - event_id: dict mapping trial_type strings to integer codes.
-
-        Raises
-        - KeyError/ValueError on missing fields or malformed inputs.
-        """
-        if not hasattr(self, 'events') or self.events is None:
-            print("No event data to process")
-            return None, None
-
-        event_mat = self.events
-        event_config = DEFAULT_EVENT_PROCESSING.get('bids_events_columns')
-
-        # Validate required fields
-        required_fields = ["onset", "duration", "trial_type"]
-        for field in required_fields:
-            if field not in event_config:
-                raise ValueError(f"Missing or invalid event configuration for {field}")
-
-        try:
-            # Get sampling rate and validate
-            sfreq = float(self.raw.info['sfreq'])
-
-            # remove NaN rows
-            event_mat = [event for event in event_mat if not len(event[event_config["trial_type"]["source_field"]]) == 0]
-            # Process onsets and durations
-            onset_samples = [event[event_config["onset"]["source_field"]] for event in event_mat]
-            onset_samples = [int(float(onset) * (sfreq/3e4)) for onset in onset_samples]
-
-            trial_type = [event[event_config["trial_type"]["source_field"]] for event in event_mat]
-            assert len(trial_type) > 0, "No trial types found in event data"
-
-            # Create event ID mapping
-            unique_trial_types = np.unique(trial_type)
-            event_id = {str(t): i+1 for i, t in enumerate(unique_trial_types)}
-            trial_type_id = np.array([event_id[t] for t in trial_type])
-
-            # Create events array
-            events = np.column_stack((
-                onset_samples,      # Sample numbers
-                np.zeros_like(onset_samples),  # Zeros (standard in MNE)
-                trial_type_id      # Event type IDs
-            ))
-
-            return events, event_id
-
-        except KeyError as e:
-            raise KeyError(f"Missing required field in event data: {e}")
-        except Exception as e:
-            raise Exception(f"Error processing events: {str(e)}")
-
+    # ------------------------------------------------------------------
+    # Event parsing
+    # ------------------------------------------------------------------
 
     def _parse_events(self, sfreq):
+        """Build MNE Annotations from word-level MFA text files."""
+        subj_dir = os.path.join(self.source_path, f'sub-{self.subject}')
+        stim_file = os.path.join(subj_dir, "mfa_stim_words.txt")
+        resp_file = os.path.join(subj_dir, "mfa_resp_words.txt")
 
-        # load word level stim and response txt file
-        stim_file = os.path.join(
-            self.source_path,
-            f'sub-{self.subject}',
-            "mfa_stim_words.txt"
-        )
-        resp_file = os.path.join(
-            self.source_path,
-            f'sub-{self.subject}',
-            "mfa_resp_words.txt"
-        )
-
-        onsets_sec = []
-        durations_sec = []
-        descriptions = []
+        onsets_sec, durations_sec, descriptions = [], [], []
 
         if os.path.exists(stim_file):
             stim_words = np.loadtxt(stim_file, dtype=str)
             for row in stim_words:
                 onset_sec, offset_sec, word = row[0], row[1], row[2]
                 onsets_sec.append(float(onset_sec))
-                durations_sec.append(max(0.0, float(offset_sec) - float(onset_sec)))
-                descriptions.append(f"stim/{word}")
+                durations_sec.append(
+                    max(0.0, float(offset_sec) - float(onset_sec))
+                )
+                descriptions.append(f"stimulus/{word}")
 
         if os.path.exists(resp_file):
             resp_words = np.loadtxt(resp_file, dtype=str)
             for row in resp_words:
                 onset_sec, offset_sec, word = row[0], row[1], row[2]
                 onsets_sec.append(float(onset_sec))
-                durations_sec.append(max(0.0, float(offset_sec) - float(onset_sec)))
-                descriptions.append(f"resp/{word}")
+                durations_sec.append(
+                    max(0.0, float(offset_sec) - float(onset_sec))
+                )
+                descriptions.append(f"response/{word}")
 
-        ann = mne.Annotations(
+        return mne.Annotations(
             onset=onsets_sec,
             duration=durations_sec,
             description=descriptions,
-            orig_time=self.raw.info.get('meas_date')
+            orig_time=self.raw.info.get('meas_date'),
         )
 
-        return ann
+    # ------------------------------------------------------------------
+    # Post-processing: standardise events.tsv
+    # ------------------------------------------------------------------
+
+    def _reformat_events_tsv(self):
+        """Rewrite the MNE-generated events.tsv to the standardised format.
+
+        Transforms the auto-generated columns produced by ``write_raw_bids()``
+        (onset, duration, trial_type="stimulus/WORD", value, sample) into the
+        canonical layout used across the pipeline
+        (subject, trial, onset, duration, value, trial_type, sample).
+        """
+        events_tsv_path = self.bids_path.copy().update(
+            suffix='events', extension='.tsv',
+        )
+        events_df = pd.read_csv(events_tsv_path.fpath, sep='\t')
+
+        split = events_df['trial_type'].str.split('/', n=1, expand=True)
+        events_df['trial_type'] = split[0]
+        events_df['value'] = split[1]
+        events_df['subject'] = self.subject
+
+        events_df = events_df.sort_values('onset').reset_index(drop=True)
+        events_df = remove_orphan_stimuli(events_df)
+        events_df['trial'] = np.ceil(
+            np.arange(1, len(events_df) + 1) / 2
+        ).astype(int)
+
+        events_df = events_df[EVENTS_COL_ORDER]
+        events_df.to_csv(events_tsv_path.fpath, sep='\t', index=False)
+
+        self._write_events_json(
+            events_tsv_path.fpath.with_suffix('.json'),
+            EVENTS_JSON_METADATA,
+        )
+
+    # ------------------------------------------------------------------
+    # Phoneme-level derivative
+    # ------------------------------------------------------------------
+
+    def _write_phoneme_derivative(self, overwrite=True, verbose=True):
+        """Copy raw data and write phoneme-level events to derivatives/phonemeLevel/.
+
+        The derivative folder is treated as its own BIDSLayout by downstream
+        preprocessing code, so the raw data file must be present alongside
+        the events.
+        """
+        from bids import BIDSLayout
+        from ieeg.io import save_derivative
+
+        bids_layout = BIDSLayout(
+            root=str(self.bids_root), derivatives=True,
+        )
+        save_derivative(self.raw, bids_layout, 'phonemeLevel', overwrite)
+
+        subj_dir = self.source_path / f'sub-{self.subject}'
+        stim_phon_file = subj_dir / 'mfa_stim_phones.txt'
+        resp_phon_file = subj_dir / 'mfa_resp_phones.txt'
+
+        if not stim_phon_file.exists() or not resp_phon_file.exists():
+            logger.warning(
+                "Phoneme annotation files not found in %s; "
+                "skipping phoneme-level derivative events.",
+                subj_dir,
+            )
+            return
+
+        sfreq = self.raw.info['sfreq']
+        n_phons = NPHONS.get(self.task, 5)
+
+        stim_df = phon_txt2df(
+            stim_phon_file, 'stimulus', self.subject,
+            n_phons, sfreq, self.task,
+        )
+        resp_df = phon_txt2df(
+            resp_phon_file, 'response', self.subject,
+            n_phons, sfreq, self.task,
+        )
+
+        events_df = (
+            pd.concat([stim_df, resp_df])
+            .sort_values('onset')
+            .reset_index(drop=True)
+        )
+        events_df = remove_orphan_stimuli(events_df)
+        events_df['trial'] = np.ceil(
+            np.arange(1, len(events_df) + 1) / (n_phons * 2)
+        ).astype(int)
+
+        events_path = BIDSPath(
+            root=self.bids_root / 'derivatives' / 'phonemeLevel',
+            subject=self.subject,
+            task=self.task,
+            datatype='ieeg',
+            suffix='events',
+            description='phonemeLevel',
+            extension='.tsv',
+            check=False,
+        )
+        events_path.mkdir(exist_ok=True)
+        events_df.to_csv(events_path.fpath, sep='\t', index=False)
+
+        self._write_events_json(
+            events_path.fpath.with_suffix('.json'),
+            PHONEME_EVENTS_JSON_METADATA,
+        )
+
+        if verbose:
+            logger.info(
+                "Wrote phoneme-level events to %s", events_path.fpath,
+            )
+
+    # ------------------------------------------------------------------
+    # JSON sidecar helper
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _write_events_json(json_path, metadata):
+        """Write an events.json sidecar describing the events.tsv columns."""
+        with open(json_path, 'w') as f:
+            json.dump(metadata, f, indent=2)
+
+    # ------------------------------------------------------------------
+    # Derivative writing (audio, channel map, etc.)
+    # ------------------------------------------------------------------
 
     def save_to_derivative(
         self,
@@ -405,22 +513,9 @@ class BIDSConverter:
         file_type: str = 'wav',
         description: str = 'raw',
         overwrite: bool = True,
-        **kwargs
+        **kwargs,
     ) -> Optional[Path]:
-        """
-        Save arrays (e.g., audio) into `derivatives/<folder>/` with BIDSPath.
-
-        Args
-        - data: Array-like data to write (e.g., audio samples).
-        - folder: Derivative subfolder name (e.g., "audio").
-        - filename: Base name for the output file (without extension).
-        - file_type: Output extension (e.g., "wav").
-        - description: BIDS description label stored in the `BIDSPath`.
-        - kwargs: Reserved for future extensions.
-
-        Returns
-        - Optional[pathlib.Path]: Final path of the written derivative, or None.
-        """
+        """Save arrays (e.g. audio) into ``derivatives/<folder>/``."""
         derivative_dir = self.bids_path.copy()
         derivative_dir.update(
             root=self.bids_root / "derivatives" / folder,
@@ -428,7 +523,7 @@ class BIDSConverter:
             datatype=filename,
             description=description,
             extension=f'.{file_type}',
-            check=False
+            check=False,
         )
 
         verbose = bool(kwargs.get('verbose', False))
@@ -436,7 +531,7 @@ class BIDSConverter:
         if derivative_dir.fpath.exists() and not overwrite:
             if verbose:
                 print(
-                    "Derivative already exists, skipping: "
+                    f"Derivative already exists, skipping: "
                     f"{derivative_dir.fpath}"
                 )
             return derivative_dir
@@ -445,11 +540,7 @@ class BIDSConverter:
 
         if file_type == 'wav':
             import soundfile as sf
-            sf.write(
-                str(derivative_dir.fpath),
-                data,
-                self.audio_fs
-            )
+            sf.write(str(derivative_dir.fpath), data, self.audio_fs)
         elif file_type == 'tsv':
             if not isinstance(data, pd.DataFrame):
                 data = pd.DataFrame(data)
@@ -459,61 +550,38 @@ class BIDSConverter:
 
         return derivative_dir
 
+    # ------------------------------------------------------------------
+    # Main conversion entry point
+    # ------------------------------------------------------------------
+
     def convert_to_bids(
-            self,
-            output_dir: Optional[Union[str, Path]] = None,
-            overwrite: bool = True,
-            verbose: bool = True
+        self,
+        output_dir: Optional[Union[str, Path]] = None,
+        overwrite: bool = True,
+        verbose: bool = True,
     ) -> BIDSPath:
-        """
-        Convert loaded data to BIDS using `mne-bids` writers.
-
-        Steps
-        - Ensure `raw` is present; create BIDS directories.
-        - Build a `BIDSPath` (session-less) and ensure destination exists.
-        - Update `raw` (events + montage) and call `write_raw_bids()`.
-        - Convert available anatomical images and write derivatives if any.
-
-        Args
-        - output_dir: Overrides `self.bids_root` if provided.
-        - overwrite: Whether to overwrite existing outputs.
-        - verbose: Verbosity flag for writers.
-
-        Returns
-        - mne_bids.BIDSPath: Path for the written iEEG file within the BIDS tree.
-
-        Raises
-        - ValueError: If data is not loaded or required attributes are missing.
-        """
-
+        """Convert loaded data to BIDS, then write word + phoneme events."""
         bids_root = Path(output_dir) if output_dir else self.bids_root
         if bids_root is None:
-            raise ValueError("output_dir must be provided or bids_root must be set")
+            raise ValueError(
+                "output_dir must be provided or bids_root must be set"
+            )
 
-        # Create BIDS path with session if provided
         bids_path = BIDSPath(
-            subject=self.subject.lstrip('sub-'),  # Remove 'sub-' prefix if present
+            subject=self.subject.lstrip('sub-'),
             task=self.task,
             root=str(bids_root),
             datatype='ieeg',
             suffix='ieeg',
         )
-
-        # Create output directory if it doesn't exist
         bids_path.mkdir(exist_ok=True)
 
         self.raw = self._make_raw_object()
-
         ann = self._parse_events(self.raw.info['sfreq'])
+        self.update_raw_object(ann=ann)
 
-        # update raw
-        self.update_raw_object(
-            ann=ann
-        )
-
-        # Write the data to BIDS format (derive events.tsv from annotations)
         write_raw_bids(
-            raw=self.raw, 
+            raw=self.raw,
             bids_path=bids_path,
             overwrite=overwrite,
             verbose=True,
@@ -522,17 +590,31 @@ class BIDSConverter:
             acpc_aligned=True,
         )
 
-        # Store the bids_path for later use
         self.bids_path = bids_path
 
-        # Write channel map information to derivatices folder
-        if hasattr(self, 'channel_map') and self.channel_map is not None:
-            self._convert_channel_map_to_bids(overwrite=overwrite, verbose=verbose)
+        # Point the in-memory RawArray at the written file so
+        # save_derivative can parse BIDS entities from inst.filenames.
+        written_fpath = bids_path.copy().update(extension='.edf').fpath
+        self.raw._filenames = [str(written_fpath)]
 
-        # Save anatomy information
+        # Standardise the auto-generated events.tsv
+        self._reformat_events_tsv()
+
+        # Write phoneme-level derivative (raw copy + phoneme events)
+        self._write_phoneme_derivative(
+            overwrite=overwrite, verbose=verbose,
+        )
+
+        # Channel map derivative
+        if hasattr(self, 'channel_map') and self.channel_map is not None:
+            self._convert_channel_map_to_bids(
+                overwrite=overwrite, verbose=verbose,
+            )
+
+        # Anatomy
         self._convert_anat_to_bids(overwrite=overwrite, verbose=verbose)
 
-        # Write audio information to derivative
+        # Audio derivative
         if hasattr(self, 'audio_files') and self.audio_files is not None:
             self.save_to_derivative(
                 data=self.audio_files,
@@ -540,59 +622,42 @@ class BIDSConverter:
                 filename='microphone',
                 file_type='wav',
                 overwrite=overwrite,
-                verbose=verbose
+                verbose=verbose,
             )
 
         return self.bids_path
 
+    # ------------------------------------------------------------------
+    # Anatomy
+    # ------------------------------------------------------------------
+
     def _create_empty_sidecar(self, bids_path: BIDSPath, modality: str):
-        """
-        Create a minimal JSON sidecar for an anatomical image placeholder.
-
-        Args
-        - bids_path: Target BIDSPath for the anatomical image.
-        - modality: "T1w" or "CT".
-        """
-        import json
-
-        # Create the sidecar path with .json extension
+        """Create a minimal JSON sidecar placeholder for an anatomical image."""
         sidecar_path = bids_path.fpath.parent / f"{bids_path.basename}.json"
-
-        # Basic metadata for the sidecar
         metadata = {
             "Modality": "MR" if modality == "T1w" else "CT",
-            "Description": f"Placeholder metadata for {modality} image. Full metadata including fiducials will be added after RAS coordinate processing.",
+            "Description": (
+                f"Placeholder metadata for {modality} image. "
+                "Full metadata including fiducials will be added after "
+                "RAS coordinate processing."
+            ),
             "GeneratedBy": [{
                 "Name": "ECoG BIDS Conversion Tool",
-                "Description": f"Temporary placeholder for {modality} metadata"
-            }]
+                "Description": (
+                    f"Temporary placeholder for {modality} metadata"
+                ),
+            }],
         }
-
-        # Write the metadata to the sidecar file
         with open(sidecar_path, 'w') as f:
             json.dump(metadata, f, indent=2)
 
-    def _convert_anat_to_bids(self, overwrite: bool = True, verbose: bool = True):
-        """
-        Locate T1w/CT sources and write to `anat/` with placeholder sidecars.
-
-        Behavior
-        - Searches for subject anatomical data under `<recon_path>/<sub>/` in
-          typical subfolders (e.g., `elec_recon/`, `mri/`).
-        - Writes T1w (.nii.gz or converted from .mgz) and CT if present.
-        - Generates empty JSON sidecars to be filled later with fiducials and
-          alignment details.
-
-        Args
-        - overwrite: Whether to overwrite existing anatomical outputs.
-        - verbose: Print progress messages.
-        """
+    def _convert_anat_to_bids(self, overwrite=True, verbose=True):
+        """Locate T1w/CT sources and write to ``anat/`` with placeholder sidecars."""
         possible_dirs = [
             self.recon_path / self.subject / 'elec_recon',
             self.recon_path / self.subject / 'mri',
         ]
 
-        # Try each possible directory
         subject_anat_source_dir = None
         for dir_path in possible_dirs:
             if dir_path.is_dir():
@@ -601,40 +666,46 @@ class BIDSConverter:
                     print(f"Found anatomical directory: {dir_path}")
                 break
 
-        # If no valid directory was found
         if subject_anat_source_dir is None:
             if verbose:
-                print(f"Could not find anatomical directory for subject {self.subject} in any of: {[str(d) for d in possible_dirs]}")
+                print(
+                    f"Could not find anatomical directory for subject "
+                    f"{self.subject} in any of: "
+                    f"{[str(d) for d in possible_dirs]}"
+                )
             return
 
-        # --- T1w Conversion ---
+        # --- T1w ---
         t1w_bids_path = BIDSPath(
-                subject=self.subject,
-                datatype='anat',
-                suffix='T1w',
-                root=self.bids_root
-            )
+            subject=self.subject,
+            datatype='anat',
+            suffix='T1w',
+            root=self.bids_root,
+        )
 
         t1w_source_file = subject_anat_source_dir / 'T1.nii.gz'
         if t1w_source_file.exists():
             if verbose:
-                print(f"Writing T1w anatomical data to: {t1w_bids_path.fpath}")
+                print(
+                    f"Writing T1w anatomical data to: {t1w_bids_path.fpath}"
+                )
             try:
                 write_anat(
-                    image=str(t1w_source_file),  # Ensure path is string for older MNE-BIDS versions
+                    image=str(t1w_source_file),
                     bids_path=t1w_bids_path,
                     overwrite=overwrite,
-                    verbose=verbose
+                    verbose=verbose,
                 )
-                # Create empty sidecar for T1w
                 self._create_empty_sidecar(t1w_bids_path, 'T1w')
             except Exception as e:
                 print(f"Error writing T1w anatomical data: {e}")
         else:
             import nibabel as nib
-            subject_anat_source_dir = self.recon_path / self.subject / 'mri'
+            subject_anat_source_dir = (
+                self.recon_path / self.subject / 'mri'
+            )
             native_mgz = subject_anat_source_dir / 'native.mgz'
-            # convert mgz to nii.gz
+            temp_file = None
             try:
                 img = nib.load(str(native_mgz))
                 temp_dir = t1w_bids_path.fpath.parent
@@ -645,75 +716,71 @@ class BIDSConverter:
                     image=str(temp_file),
                     bids_path=t1w_bids_path,
                     overwrite=overwrite,
-                    verbose=verbose
+                    verbose=verbose,
                 )
-                # Create empty sidecar for T1w
                 self._create_empty_sidecar(t1w_bids_path, 'T1w')
             except Exception as e:
                 print(f"Error writing T1w anatomical data: {e}")
             finally:
-                # Always clean up the temporary file
-                if temp_file.exists():
+                if temp_file is not None and temp_file.exists():
                     temp_file.unlink()
 
-        # --- CT Conversion ---
-        # Using postimpRaw.nii.gz as identified for D63
+        # --- CT ---
         ct_source_file = subject_anat_source_dir / 'postimpRaw.nii.gz'
         if ct_source_file.exists():
             ct_bids_path = BIDSPath(
                 subject=self.subject,
                 datatype='anat',
-                suffix='ct', # BIDS suffix for CT scans
+                suffix='ct',
                 root=self.bids_root,
-                check=False # allow suffix ct, because CT is still under development for BIDS
+                check=False,
             )
             if verbose:
-                print(f"Processing CT anatomical data to: {ct_bids_path.fpath}")
+                print(
+                    f"Processing CT anatomical data to: "
+                    f"{ct_bids_path.fpath}"
+                )
 
             import shutil
-            # Create a temporary file in the same directory as the destination
             temp_dir = ct_bids_path.fpath.parent
-            temp_file = temp_dir / 'temp_ct.nii'  # No .gz extension
+            temp_file = temp_dir / 'temp_ct.nii'
 
             try:
-                # Copy the file to the temp location without .gz
                 shutil.copy2(ct_source_file, temp_file)
-
-                # Now use write_anat with the uncompressed file
                 write_anat(
                     image=str(temp_file),
                     bids_path=ct_bids_path,
                     overwrite=overwrite,
-                    verbose=verbose
+                    verbose=verbose,
                 )
-
-                # Create empty sidecar for CT
                 self._create_empty_sidecar(ct_bids_path, 'CT')
-
                 if verbose:
-                    print(f"Successfully processed CT scan to {ct_bids_path.fpath}")
-
+                    print(
+                        f"Successfully processed CT scan to "
+                        f"{ct_bids_path.fpath}"
+                    )
             except Exception as e:
                 print(f"Error writing CT anatomical data: {e}")
-
             finally:
-                # Always clean up the temporary file
                 if temp_file.exists():
                     temp_file.unlink()
         else:
             if verbose:
-                print(f"CT file (postimpRaw.nii.gz) not found: {ct_source_file}. Skipping CT conversion.")
+                print(
+                    f"CT file (postimpRaw.nii.gz) not found: "
+                    f"{ct_source_file}. Skipping CT conversion."
+                )
+
+    # ------------------------------------------------------------------
+    # Channel map derivative
+    # ------------------------------------------------------------------
 
     def _convert_channel_map_to_bids(self, overwrite: bool, verbose: bool):
-        """Serialize the channel map to a TSV derivative.
-
-        The channel map is stored as a grid-shaped array where each non-NaN
-        entry contains the channel number assigned to that grid position.
-        This method flattens the array into a tabular representation with
-        one row per recording channel.
-        """
+        """Serialize the channel map to a TSV derivative."""
         if self.bids_path is None:
-            raise ValueError("BIDS path not set; call convert_to_bids() first")
+            raise ValueError(
+                "BIDS path not set; call convert_to_bids() first"
+            )
 
         if self.channel_map is None:
             if verbose:
@@ -726,33 +793,33 @@ class BIDSConverter:
         channel_map = np.asarray(self.channel_map)
         if channel_map.ndim != 2:
             raise ValueError(
-                "Expected a 2D channel map array, got shape "
-                f"{channel_map.shape}"
+                f"Expected a 2D channel map array, "
+                f"got shape {channel_map.shape}"
             )
 
         rows = []
-        raw_channel_names = self.raw.ch_names if self.raw is not None else None
+        raw_ch_names = self.raw.ch_names if self.raw is not None else None
         for row_idx in range(channel_map.shape[0]):
             for col_idx in range(channel_map.shape[1]):
-                channel_number = channel_map[row_idx, col_idx]
-                if pd.isna(channel_number):
+                ch_num = channel_map[row_idx, col_idx]
+                if pd.isna(ch_num):
                     continue
-                channel_index = int(channel_number)
-                if raw_channel_names is None:
-                    channel_name = str(int(channel_number))
-                elif 0 <= channel_index < len(raw_channel_names):
-                    channel_name = raw_channel_names[channel_index]
+                ch_idx = int(ch_num)
+                if raw_ch_names is None:
+                    ch_name = str(int(ch_num))
+                elif 0 <= ch_idx < len(raw_ch_names):
+                    ch_name = raw_ch_names[ch_idx]
                 else:
                     raise ValueError(
-                        "Channel map references channel number "
-                        f"{int(channel_number)}, which is out of range for "
+                        f"Channel map references channel number "
+                        f"{int(ch_num)}, which is out of range for "
                         "the raw object"
                     )
                 rows.append({
                     "row": row_idx,
                     "col": col_idx,
-                    "channel_number": int(channel_number),
-                    "name": channel_name,
+                    "channel_number": int(ch_num),
+                    "name": ch_name,
                 })
 
         if not rows:
@@ -765,7 +832,7 @@ class BIDSConverter:
 
         channel_map_df = pd.DataFrame(rows)
         channel_map_df = channel_map_df.sort_values(
-            ["channel_number", "row", "col"]
+            ["channel_number", "row", "col"],
         ).reset_index(drop=True)
 
         derivative_path = self.save_to_derivative(
@@ -779,35 +846,217 @@ class BIDSConverter:
         )
 
         if verbose:
-            print(f"Saved channel map derivative to: {derivative_path.fpath}")
+            print(
+                f"Saved channel map derivative to: {derivative_path.fpath}"
+            )
 
         return derivative_path
 
+    # ------------------------------------------------------------------
+    # In-place channel renaming on existing BIDS output
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _rename_edf_channels_by_index(edf_path, index_to_name, verbose=True):
+        """Rename EDF channels by position index, ignoring current labels."""
+        edf_path = Path(edf_path)
+        if not edf_path.exists():
+            if verbose:
+                print(f"EDF not found, skipping: {edf_path}")
+            return
+
+        with open(edf_path, 'r+b') as f:
+            f.seek(252)
+            ns = int(f.read(4).decode('ascii').strip())
+
+            for i in range(ns):
+                if i not in index_to_name:
+                    continue
+                offset = 256 + i * 16
+                new_label = index_to_name[i].ljust(16)[:16]
+                f.seek(offset)
+                f.write(new_label.encode('ascii'))
+
+        if verbose:
+            print(f"Updated EDF channel labels: {edf_path}")
+
+    @staticmethod
+    def _rename_tsv_name_by_index(tsv_path, index_to_name, verbose=True):
+        """Rename the ``name`` column by row index, ignoring current values."""
+        tsv_path = Path(tsv_path)
+        if not tsv_path.exists():
+            if verbose:
+                print(f"TSV not found, skipping: {tsv_path}")
+            return
+
+        df = pd.read_csv(tsv_path, sep='\t')
+        if 'name' not in df.columns:
+            if verbose:
+                print(f"No 'name' column in {tsv_path}, skipping")
+            return
+
+        df['name'] = [
+            index_to_name.get(i, df.at[i, 'name'])
+            for i in range(len(df))
+        ]
+        df.to_csv(tsv_path, sep='\t', index=False)
+
+        if verbose:
+            print(f"Updated TSV channel names: {tsv_path}")
+
+    @staticmethod
+    def _rename_chanmap_tsv(tsv_path, index_to_name, verbose=True):
+        """Rename the ``name`` column using the ``channel_number`` column as key."""
+        tsv_path = Path(tsv_path)
+        if not tsv_path.exists():
+            if verbose:
+                print(f"TSV not found, skipping: {tsv_path}")
+            return
+
+        df = pd.read_csv(tsv_path, sep='\t')
+        if 'name' not in df.columns or 'channel_number' not in df.columns:
+            if verbose:
+                print(f"Missing columns in {tsv_path}, skipping")
+            return
+
+        df['name'] = df['channel_number'].apply(
+            lambda x: index_to_name.get(int(x), str(int(x))),
+        )
+        df.to_csv(tsv_path, sep='\t', index=False)
+
+        if verbose:
+            print(f"Updated channel map TSV: {tsv_path}")
+
+    @staticmethod
+    def _strip_acq_run(filename):
+        """Remove ``_acq-*`` and ``_run-*`` entities from a BIDS filename."""
+        return re.sub(r'_(?:acq|run)-[^_.]+', '', filename)
+
+    def update_bids_channel_names(self, verbose=True):
+        """Rename channels in an existing BIDS dataset to ``R{row}-C{col}`` format.
+
+        Assigns names based on each channel's **position index** in the file
+        (0-indexed), making the result independent of whatever the current
+        names happen to be.  Also strips ``_acq-*`` and ``_run-*`` entities
+        from BIDS filenames.
+        """
+        subj_dir = os.path.join(
+            self.source_path, f'sub-{self.subject}',
+        )
+        standalone_map = os.path.join(
+            subj_dir, f'sub-{self.subject}_channel_map.npy',
+        )
+        if os.path.exists(standalone_map):
+            self.channel_map = np.load(standalone_map)
+        else:
+            raw_path = os.path.join(
+                subj_dir, f'sub-{self.subject}_raw.h5',
+            )
+            with h5py.File(raw_path, 'r') as f:
+                self.channel_map = f['channel_map'][()]
+
+        self._ch_index_to_name = self._build_channel_index_to_name()
+        subject_id = self.subject.lstrip('sub-')
+
+        # -- rename channels by position index --
+
+        edf_files = list(self.bids_root.rglob(
+            f'sub-{subject_id}*_ieeg.edf',
+        ))
+        for f in edf_files:
+            self._rename_edf_channels_by_index(
+                f, self._ch_index_to_name, verbose,
+            )
+
+        for suffix in ('channels', 'electrodes'):
+            tsv_files = list(self.bids_root.rglob(
+                f'sub-{subject_id}*_{suffix}.tsv',
+            ))
+            for f in tsv_files:
+                self._rename_tsv_name_by_index(
+                    f, self._ch_index_to_name, verbose,
+                )
+
+        chanmap_tsvs = list(self.bids_root.rglob(
+            f'sub-{subject_id}*channelMap*.tsv',
+        ))
+        for f in chanmap_tsvs:
+            self._rename_chanmap_tsv(
+                f, self._ch_index_to_name, verbose,
+            )
+
+        # -- strip acq/run entities from filenames --
+
+        subject_files = sorted(
+            self.bids_root.rglob(f'sub-{subject_id}*'),
+            reverse=True,
+        )
+        for f in subject_files:
+            if not f.is_file():
+                continue
+            new_name = self._strip_acq_run(f.name)
+            if new_name != f.name:
+                new_path = f.parent / new_name
+                f.replace(new_path)
+                if verbose:
+                    print(f"Renamed: {f.name} -> {new_name}")
+
+        scans_tsv = (
+            self.bids_root / f'sub-{subject_id}'
+            / f'sub-{subject_id}_scans.tsv'
+        )
+        if scans_tsv.exists():
+            df = pd.read_csv(scans_tsv, sep='\t')
+            if 'filename' in df.columns:
+                df['filename'] = df['filename'].apply(
+                    self._strip_acq_run,
+                )
+                df.to_csv(scans_tsv, sep='\t', index=False)
+                if verbose:
+                    print(f"Updated scans.tsv paths: {scans_tsv}")
+
+        if verbose:
+            print("Channel name update complete.")
+
+
+# ---------------------------------------------------------------------------
+# CLI entry point
+# ---------------------------------------------------------------------------
 
 def main(
     source_path: Path,
-    bids_root: Path,
     subject: str,
     task: str,
-    fileIDs: Optional[list] = None,
+    fileIDs: Optional[tuple] = None,
     array_type: Optional[str] = None,
     recon_path: Optional[Path] = None,
 ):
-    """
-    Entry point to run the conversion from the command line.
+    """Run the full Intan RHD -> BIDS conversion pipeline."""
+    try:
+        from dataloaders import rhdLoader
+    except ImportError:
+        from .dataloaders import rhdLoader
 
-    Performs
-    - Initialize `BIDSConverter` with provided paths and labels.
-    - Load source data and write outputs to a BIDS dataset.
-    """
+    if task == 'lexical':
+        bids_root = Path.home() / 'Box' / 'CoganLab' / 'BIDS_1.0_Lexical_\u00b5ECoG' / 'BIDS'
+    elif task == 'phoneme':
+        bids_root = Path.home() / 'Box' / 'CoganLab' / 'BIDS_1.0_Phoneme_Sequence_uECoG' / 'BIDS'
+    else:
+        raise ValueError(f'Invalid task: {task}')
 
-    loader = rhdLoader(subject, source_path, fileIDs=fileIDs,
-                       array_type=array_type)
-    loader.load_data()
-    loader.make_cue_events()
-    loader.run_mfa(task_name=TASK2MFA[task])
+    loader = rhdLoader(
+        subject, source_path, fileIDs=fileIDs, array_type=array_type,
+    )
 
-    # Initialize the converter
+    # # standard data loading pipeline
+    # loader.load_data()
+    # loader.make_cue_events()
+    # loader.run_mfa(task_name=TASK2MFA[task])
+
+
+    # # update impedance and bad channels
+    loader.update_impedance() 
+
     bids_converter = BIDSConverter(
         source_path=loader.out_dir,
         subject=subject,
@@ -816,58 +1065,67 @@ def main(
         recon_path=recon_path,
     )
 
-    # Load and convert the data
-    bids_converter.convert_to_bids()
+    # bids_converter.convert_to_bids()
+
+    # rename channels in existing BIDS output to R{row}-C{col} format
+    bids_converter.update_bids_channel_names()
 
 
 if __name__ == "__main__":
     import argparse
+
     parser = argparse.ArgumentParser()
 
     parser.add_argument(
         "--source-path",
         default=None,
-        help='Directory containing the RHD source data files. If not provided,' \
-        'the user will be prompted to select a directory via GUI. This directory' \
-        'should also contain the trialInfo file from the task computer. This' \
-        'will need to be added manually for now.'
-    )
-    parser.add_argument(
-        "--bids-root",
-        default=Path.home() / "Box" / "CoganLab" / "BIDS_1.0_Lexical_µECoG" / "BIDS",
-        type=Path,
-        help='Root directory to save the BIDS dataset'
+        help=(
+            'Directory containing the RHD source data files. If not provided, '
+            'the user will be prompted to select a directory via GUI. This '
+            'directory should also contain the trialInfo file from the task '
+            'computer.'
+        ),
     )
     parser.add_argument(
         "--subject",
         default=None,
-        help='Subject identifier (e.g., S41)'
+        help='Subject identifier (e.g., S41)',
     )
     parser.add_argument(
         "--fileIDs",
-        nargs='+',
+        nargs=2,
+        type=int,
         default=None,
-        help='List of file IDs to process indicating the RHD files to process' \
-        'when ordered alphabetically in the source data directory. (e.g.' \
-        'for the 5th through 10th files, use --fileIDs 5 6 7 8 9 10)'
+        metavar=('START', 'END'),
+        help=(
+            'Inclusive start and end (1-indexed) of the contiguous range of '
+            'RHD files to process when ordered alphabetically in the source '
+            'data directory (e.g. for the 5th through 10th files, use '
+            '--fileIDs 5 10)'
+        ),
     )
     parser.add_argument(
         "--array-type",
         default=None,
-        help='Type of electrode array (128-strip, 256-grid, 256-strip, 1024-grid, hybrid-strip)'
+        help=(
+            'Type of electrode array '
+            '(128-strip, 256-grid, 256-strip, 1024-grid, hybrid-strip)'
+        ),
     )
     parser.add_argument(
         "--recon-path",
         default=Path.home() / "Box" / "ECoG_Recon",
         type=Path,
-        help='Parent directory containing subject anatomical subdirectories (e.g., ECoG_Recon/)'
+        help=(
+            'Parent directory containing subject anatomical subdirectories '
+            '(e.g., ECoG_Recon/)'
+        ),
     )
     parser.add_argument(
         "--task",
         default="lexical",
-        help='Name of the task (default: lexical)'
+        help='Name of the task (default: lexical)',
     )
 
     args = parser.parse_args()
-
     main(**vars(args))
