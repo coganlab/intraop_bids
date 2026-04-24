@@ -186,13 +186,28 @@ class BIDSConverter:
     # ------------------------------------------------------------------
 
     def _build_channel_index_to_name(self):
-        """Invert the channel map to map each channel index to an ``R{row}-C{col}`` name."""
+        """Invert the channel map to map each channel index to an ``R{row}-C{col}`` name.
+
+        For hybrid arrays where a macro electrode occupies multiple grid
+        positions, the **first** position encountered in row-major order
+        (top-left corner) is kept as the canonical name.  A companion
+        dict ``self._ch_index_to_type`` is built at the same time,
+        mapping each channel index to ``"micro"`` or ``"macro"``.
+        """
         index_to_name = {}
+        index_count: dict[int, int] = {}
         for row_idx in range(self.channel_map.shape[0]):
             for col_idx in range(self.channel_map.shape[1]):
                 ch_num = self.channel_map[row_idx, col_idx]
                 if not np.isnan(ch_num):
-                    index_to_name[int(ch_num)] = f"R{row_idx}-C{col_idx}"
+                    key = int(ch_num)
+                    index_count[key] = index_count.get(key, 0) + 1
+                    if key not in index_to_name:
+                        index_to_name[key] = f"R{row_idx}-C{col_idx}"
+        self._ch_index_to_type = {
+            k: "macro" if index_count[k] > 1 else "micro"
+            for k in index_to_name
+        }
         return index_to_name
 
     def _make_raw_object(self):
@@ -237,6 +252,41 @@ class BIDSConverter:
         gc.collect()
 
         return raw
+
+    # ------------------------------------------------------------------
+    # Post-write electrode type patching
+    # ------------------------------------------------------------------
+
+    def _add_electrode_type_to_tsvs(self, bids_path, verbose=True):
+        """Append an ``electrode_type`` column to channels and electrodes TSVs.
+
+        Must be called after ``write_raw_bids`` so the TSV files exist on
+        disk.  Uses ``self._ch_index_to_name`` to map row positions back
+        to channel indices and ``self._ch_index_to_type`` for the type.
+        """
+        name_to_type = {
+            name: self._ch_index_to_type.get(idx, "micro")
+            for idx, name in self._ch_index_to_name.items()
+        }
+        subject_id = bids_path.subject
+        for suffix in ("channels", "electrodes"):
+            tsv_files = list(
+                Path(bids_path.root).rglob(
+                    f"sub-{subject_id}*_{suffix}.tsv",
+                ),
+            )
+            for tsv_path in tsv_files:
+                df = pd.read_csv(tsv_path, sep="\t")
+                if "name" not in df.columns:
+                    continue
+                df["electrode_type"] = df["name"].map(name_to_type).fillna(
+                    "micro",
+                )
+                df.to_csv(tsv_path, sep="\t", index=False)
+                if verbose:
+                    print(
+                        f"Added electrode_type column to: {tsv_path}"
+                    )
 
     # ------------------------------------------------------------------
     # Annotations / montage
@@ -319,8 +369,8 @@ class BIDSConverter:
         for i in range(n_rows):
             for j in range(n_cols):
                 if not np.isnan(channel_map[i, j]):
-                    x = j / n_cols
-                    y = (n_rows - i - 1) / n_rows
+                    x = (j + 0.5) / n_cols
+                    y = (n_rows - i - 0.5) / n_rows
                     width = 1 / n_cols
                     height = 1 / n_rows
                     pos.append([x, y, width, height])
@@ -590,6 +640,9 @@ class BIDSConverter:
             acpc_aligned=True,
         )
 
+        if hasattr(self, '_ch_index_to_type'):
+            self._add_electrode_type_to_tsvs(bids_path, verbose=verbose)
+
         self.bids_path = bids_path
 
         # Point the in-memory RawArray at the written file so
@@ -815,11 +868,17 @@ class BIDSConverter:
                         f"{int(ch_num)}, which is out of range for "
                         "the raw object"
                     )
+                ch_type = (
+                    self._ch_index_to_type.get(int(ch_num), "micro")
+                    if hasattr(self, "_ch_index_to_type")
+                    else "micro"
+                )
                 rows.append({
                     "row": row_idx,
                     "col": col_idx,
                     "channel_number": int(ch_num),
                     "name": ch_name,
+                    "electrode_type": ch_type,
                 })
 
         if not rows:
@@ -881,8 +940,14 @@ class BIDSConverter:
             print(f"Updated EDF channel labels: {edf_path}")
 
     @staticmethod
-    def _rename_tsv_name_by_index(tsv_path, index_to_name, verbose=True):
-        """Rename the ``name`` column by row index, ignoring current values."""
+    def _rename_tsv_name_by_index(
+        tsv_path, index_to_name, index_to_type=None, verbose=True,
+    ):
+        """Rename the ``name`` column by row index, ignoring current values.
+
+        If *index_to_type* is provided, an ``electrode_type`` column is
+        also written (or updated) using the same positional mapping.
+        """
         tsv_path = Path(tsv_path)
         if not tsv_path.exists():
             if verbose:
@@ -899,14 +964,26 @@ class BIDSConverter:
             index_to_name.get(i, df.at[i, 'name'])
             for i in range(len(df))
         ]
+        if index_to_type is not None:
+            df['electrode_type'] = [
+                index_to_type.get(i, "micro")
+                for i in range(len(df))
+            ]
         df.to_csv(tsv_path, sep='\t', index=False)
 
         if verbose:
             print(f"Updated TSV channel names: {tsv_path}")
 
     @staticmethod
-    def _rename_chanmap_tsv(tsv_path, index_to_name, verbose=True):
-        """Rename the ``name`` column using the ``channel_number`` column as key."""
+    def _rename_chanmap_tsv(
+        tsv_path, index_to_name, index_to_type=None, verbose=True,
+    ):
+        """Rename the ``name`` column using the ``channel_number`` column as key.
+
+        If *index_to_type* is provided, an ``electrode_type`` column is
+        also written (or updated) using ``channel_number`` as the lookup
+        key.
+        """
         tsv_path = Path(tsv_path)
         if not tsv_path.exists():
             if verbose:
@@ -922,6 +999,10 @@ class BIDSConverter:
         df['name'] = df['channel_number'].apply(
             lambda x: index_to_name.get(int(x), str(int(x))),
         )
+        if index_to_type is not None:
+            df['electrode_type'] = df['channel_number'].apply(
+                lambda x: index_to_type.get(int(x), "micro"),
+            )
         df.to_csv(tsv_path, sep='\t', index=False)
 
         if verbose:
@@ -968,13 +1049,15 @@ class BIDSConverter:
                 f, self._ch_index_to_name, verbose,
             )
 
+        index_to_type = getattr(self, '_ch_index_to_type', None)
+
         for suffix in ('channels', 'electrodes'):
             tsv_files = list(self.bids_root.rglob(
                 f'sub-{subject_id}*_{suffix}.tsv',
             ))
             for f in tsv_files:
                 self._rename_tsv_name_by_index(
-                    f, self._ch_index_to_name, verbose,
+                    f, self._ch_index_to_name, index_to_type, verbose,
                 )
 
         chanmap_tsvs = list(self.bids_root.rglob(
@@ -982,7 +1065,7 @@ class BIDSConverter:
         ))
         for f in chanmap_tsvs:
             self._rename_chanmap_tsv(
-                f, self._ch_index_to_name, verbose,
+                f, self._ch_index_to_name, index_to_type, verbose,
             )
 
         # -- strip acq/run entities from filenames --
@@ -1001,19 +1084,19 @@ class BIDSConverter:
                 if verbose:
                     print(f"Renamed: {f.name} -> {new_name}")
 
-        scans_tsv = (
-            self.bids_root / f'sub-{subject_id}'
-            / f'sub-{subject_id}_scans.tsv'
-        )
-        if scans_tsv.exists():
-            df = pd.read_csv(scans_tsv, sep='\t')
-            if 'filename' in df.columns:
-                df['filename'] = df['filename'].apply(
-                    self._strip_acq_run,
-                )
-                df.to_csv(scans_tsv, sep='\t', index=False)
-                if verbose:
-                    print(f"Updated scans.tsv paths: {scans_tsv}")
+        # scans_tsv = (
+        #     self.bids_root / f'sub-{subject_id}'
+        #     / f'sub-{subject_id}_scans.tsv'
+        # )
+        # if scans_tsv.exists():
+        #     df = pd.read_csv(scans_tsv, sep='\t')
+        #     if 'filename' in df.columns:
+        #         df['filename'] = df['filename'].apply(
+        #             self._strip_acq_run,
+        #         )
+        #         df.to_csv(scans_tsv, sep='\t', index=False)
+        #         if verbose:
+        #             print(f"Updated scans.tsv paths: {scans_tsv}")
 
         if verbose:
             print("Channel name update complete.")
@@ -1029,6 +1112,7 @@ def main(
     task: str,
     fileIDs: Optional[tuple] = None,
     array_type: Optional[str] = None,
+    num_arrays: int = 1,
     recon_path: Optional[Path] = None,
 ):
     """Run the full Intan RHD -> BIDS conversion pipeline."""
@@ -1046,6 +1130,7 @@ def main(
 
     loader = rhdLoader(
         subject, source_path, fileIDs=fileIDs, array_type=array_type,
+        num_arrays=num_arrays,
     )
 
     # # standard data loading pipeline
@@ -1053,8 +1138,7 @@ def main(
     # loader.make_cue_events()
     # loader.run_mfa(task_name=TASK2MFA[task])
 
-
-    # # update impedance and bad channels
+    # update impedance and bad channels
     loader.update_impedance() 
 
     bids_converter = BIDSConverter(
@@ -1064,11 +1148,10 @@ def main(
         bids_root=bids_root,
         recon_path=recon_path,
     )
-
-    # bids_converter.convert_to_bids()
+    bids_converter.convert_to_bids()
 
     # rename channels in existing BIDS output to R{row}-C{col} format
-    bids_converter.update_bids_channel_names()
+    # bids_converter.update_bids_channel_names()
 
 
 if __name__ == "__main__":
@@ -1110,6 +1193,16 @@ if __name__ == "__main__":
         help=(
             'Type of electrode array '
             '(128-strip, 256-grid, 256-strip, 1024-grid, hybrid-strip)'
+        ),
+    )
+    parser.add_argument(
+        "--num-arrays",
+        type=int,
+        default=1,
+        help=(
+            'Number of identical arrays used (default: 1). '
+            'When > 1, the channel map is vertically stacked with '
+            'offset channel indices for each copy.'
         ),
     )
     parser.add_argument(

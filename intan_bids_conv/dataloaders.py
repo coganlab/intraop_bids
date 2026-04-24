@@ -31,7 +31,8 @@ class rhdLoader:
                  rhd_dir: Optional[Union[str, Path]] = None,
                  out_dir: Optional[Union[str, Path]] = None,
                  fileIDs: Optional[tuple[int, int]] = None,
-                 array_type: Optional[str] = None) -> None:
+                 array_type: Optional[str] = None,
+                 num_arrays: int = 1) -> None:
         """Initialize an RHD data loader.
 
         Args:
@@ -46,6 +47,9 @@ class rhdLoader:
             array_type: Name of the electrode array channel map to use
                 (e.g. '128-strip', '256-grid', '256-strip', or 'hybrid-strip').
                 Default is None to prompt the user to select an array type.
+            num_arrays: Number of identical arrays used (default 1).  When
+                greater than 1 the base channel map is vertically stacked
+                with offset channel indices for each copy.
 
         Returns:
             None
@@ -63,7 +67,7 @@ class rhdLoader:
         self.fileIDs = (int(fileIDs[0]), int(fileIDs[1])) if fileIDs is not None else None
 
         if array_type is None:
-            arr_types = ['128-strip', '256-grid', '256-strip', '256-strip-old', '1024-grid', 'hybrid-strip']
+            arr_types = ['128-strip', '256-grid', '256-strip', '256-strip-old', '1024-grid-S82', 'hybrid-strip']
             types = '/'.join(arr_types)
             resp = input(f'Please specify array type {types}:')
             if resp in arr_types:
@@ -71,7 +75,12 @@ class rhdLoader:
             else:
                 raise ValueError('Invalid array type specified. This type may'
                                  'not be implemented yet.')
-        self.channel_map = self._get_channel_map(array_type)
+        if num_arrays > 1:
+            self.channel_map = self._build_composite_channel_map(
+                array_type, num_arrays,
+            )
+        else:
+            self.channel_map = self._get_channel_map(array_type)
         self.save_channel_map()
 
     def load_data(self) -> "rhdLoader":
@@ -479,6 +488,38 @@ class rhdLoader:
         # convert 1-indexed channels in mat file to 0-indexed
         chan_map = loadmat(chan_map_fname)['chanMap'].squeeze() - 1
         return chan_map
+
+    def _build_composite_channel_map(
+        self, array_type: str, count: int,
+    ) -> np.ndarray:
+        """Build a composite channel map by vertically stacking *count* copies.
+
+        Each copy is offset so that its channel indices follow contiguously
+        after the previous copy (matching the Intan headstage port assignment
+        when multiple identical arrays are connected).
+
+        Args:
+            array_type: Base array type name (e.g. ``'hybrid-strip'``).
+            count: Number of identical arrays to stack.
+
+        Returns:
+            A 2D numpy array with shape ``(base_rows * count, base_cols)``.
+        """
+        base_map = self._get_channel_map(array_type)
+        n_per_array = int(np.nanmax(base_map)) + 1
+        n_cols = base_map.shape[1]
+
+        copies = [base_map]
+        for i in range(1, count):
+            # append NaN channels between arrays (single row of NaNs for vertical stack)
+            nan_channels = np.full((1, n_cols), np.nan)
+            copies.append(nan_channels)
+
+            offset = i * n_per_array
+            shifted = np.where(np.isnan(base_map), np.nan, base_map + offset)
+            copies.append(shifted)
+
+        return np.vstack(copies)
 
     def _build_full_rhd_data(
         self, rhd_files: Sequence[Path], fs_down: float
