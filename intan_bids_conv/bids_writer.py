@@ -397,23 +397,44 @@ class BIDSConverter:
     def _parse_events(self, sfreq):
         """Build MNE Annotations from word-level MFA text files."""
         subj_dir = os.path.join(self.source_path, f'sub-{self.subject}')
-        stim_file = os.path.join(subj_dir, "mfa_stim_words.txt")
-        resp_file = os.path.join(subj_dir, "mfa_resp_words.txt")
+        # will try to load corrected files first, then fallback to original files
+        stim_file = [os.path.join(subj_dir, "mfa_adj_stim_words.txt"), os.path.join(subj_dir, "mfa_stim_words.txt")]
+        resp_file = [os.path.join(subj_dir, "mfa_adj_resp_words.txt"), os.path.join(subj_dir, "mfa_resp_words.txt")]
 
         onsets_sec, durations_sec, descriptions = [], [], []
 
-        if os.path.exists(stim_file):
-            stim_words = np.loadtxt(stim_file, dtype=str)
+        stim_words = None
+        if os.path.exists(stim_file[0]):
+            stim_words = np.loadtxt(stim_file[0], dtype=str)
+            logger.info(f"Loaded corrected stimulus word file from {stim_file[0]}")
+        elif os.path.exists(stim_file[1]):
+            stim_words = np.loadtxt(stim_file[1], dtype=str)
+            logger.info(f"Loaded original stimulus word file from {stim_file[1]}")
+        else:
+            logger.error(f"Stimulus word file not found in {subj_dir}")
+            raise FileNotFoundError(f"Stimulus word file not found in {subj_dir}")
+        
+        if stim_words is not None:
             for row in stim_words:
-                onset_sec, offset_sec, word = row[0], row[1], row[2]
-                onsets_sec.append(float(onset_sec))
-                durations_sec.append(
-                    max(0.0, float(offset_sec) - float(onset_sec))
-                )
-                descriptions.append(f"stimulus/{word}")
+                    onset_sec, offset_sec, word = row[0], row[1], row[2]
+                    onsets_sec.append(float(onset_sec))
+                    durations_sec.append(
+                        max(0.0, float(offset_sec) - float(onset_sec))
+                    )
+                    descriptions.append(f"stimulus/{word}")
 
-        if os.path.exists(resp_file):
-            resp_words = np.loadtxt(resp_file, dtype=str)
+        resp_words = None
+        if os.path.exists(resp_file[0]):
+            resp_words = np.loadtxt(resp_file[0], dtype=str)
+            logger.info(f"Loaded corrected response word file from {resp_file[0]}")
+        elif os.path.exists(resp_file[1]):
+            resp_words = np.loadtxt(resp_file[1], dtype=str)
+            logger.info(f"Loaded original response word file from {resp_file[1]}")
+        else:
+            logger.error(f"Response word file not found in {subj_dir}")
+            raise FileNotFoundError(f"Response word file not found in {subj_dir}")
+        
+        if resp_words is not None:
             for row in resp_words:
                 onset_sec, offset_sec, word = row[0], row[1], row[2]
                 onsets_sec.append(float(onset_sec))
@@ -485,26 +506,34 @@ class BIDSConverter:
         save_derivative(self.raw, bids_layout, 'phonemeLevel', overwrite)
 
         subj_dir = self.source_path / f'sub-{self.subject}'
-        stim_phon_file = subj_dir / 'mfa_stim_phones.txt'
-        resp_phon_file = subj_dir / 'mfa_resp_phones.txt'
+        stim_phon_file = [subj_dir / 'mfa_adj_stim_phones.txt', subj_dir / 'mfa_stim_phones.txt']
+        resp_phon_file = [subj_dir / 'mfa_adj_resp_phones.txt', subj_dir / 'mfa_resp_phones.txt']
 
-        if not stim_phon_file.exists() or not resp_phon_file.exists():
-            logger.warning(
-                "Phoneme annotation files not found in %s; "
-                "skipping phoneme-level derivative events.",
-                subj_dir,
-            )
-            return
+        if stim_phon_file[0].exists():
+            stim_fname = stim_phon_file[0]
+        elif stim_phon_file[1].exists():
+            stim_fname = stim_phon_file[1]
+        else:
+            logger.error(f"Stimulus phoneme file not found in {subj_dir}")
+            raise FileNotFoundError(f"Stimulus phoneme file not found in {subj_dir}")
+        
+        if resp_phon_file[0].exists():
+            resp_fname = resp_phon_file[0]
+        elif resp_phon_file[1].exists():
+            resp_fname = resp_phon_file[1]
+        else:
+            logger.error(f"Response phoneme file not found in {subj_dir}")
+            raise FileNotFoundError(f"Response phoneme file not found in {subj_dir}")
 
         sfreq = self.raw.info['sfreq']
         n_phons = NPHONS.get(self.task, 5)
 
         stim_df = phon_txt2df(
-            stim_phon_file, 'stimulus', self.subject,
+            stim_fname, 'stimulus', self.subject,
             n_phons, sfreq, self.task,
         )
         resp_df = phon_txt2df(
-            resp_phon_file, 'response', self.subject,
+            resp_fname, 'response', self.subject,
             n_phons, sfreq, self.task,
         )
 
