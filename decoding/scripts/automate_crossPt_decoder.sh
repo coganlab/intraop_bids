@@ -1,28 +1,24 @@
 #!/bin/bash
+# subj_arr=("S81")
+subj_arr=("S41" "S45" "S47" "S55" "S56" "S63" "S67" "S73" "S74" "S75" "S76" "S78")
+bids_root="/hpc/home/zms14/cworkspace/BIDS_1.0_Lexical_µECoG/BIDS/derivatives/epoch(phonemeLevel)(CAR)"
+task="lexical"
+phonemeIdx=-1
 
-# subj_arr=("S82")
-subj_arr=("S30" "S41" "S45" "S47" "S51" "S52" "S53" "S55" "S56" "S63" "S67" "S73" "S74" "S75" "S76" "S78" "S81" "S82" "S83")
-bids_root="~/cworkspace/BIDS_1.0_Lexical_µECoG/BIDS/derivatives/epoch(phonemeLevel)(CAR)"
-phonemeIdx=(-1 1 2 3 4 5)
-# phonemeIdx=(-1)
-nPhons=5
+poolTask="lexical"
+nFolds=20
+nIter=10
+twMin=-1
+twMax=1
 
-nFolds=10
-nIter=50
-# chance=true
-chance=false
-twMin=-0.5
-twMax=0.5
-
-task_periods=("perception" "production")
+task_periods=("production" "perception")
 norm_type="MeanSub"
-# description="Zscore"
+# norm_type="Zscore"
 suffix="highGamma"
 # suffix="spikeBand"
 extension=".fif"
-task="lexical"
+
 datatype="epoch(band)(power)(sig)"
-# datatype="epoch(band)(power)"
 
 for subject in "${subj_arr[@]}"; do
     for task_period in "${task_periods[@]}"; do
@@ -30,14 +26,14 @@ for subject in "${subj_arr[@]}"; do
         for phon in "${phonemeIdx[@]}"; do
             echo "----------------------------------------"
             echo "Creating processing job for ${subject}, task_period ${task_period}, phonemeIdx ${phon}"
-            job_name="${subject}_${task_period}_${phon}_decode_phonemeLevel"
+            job_name="${subject}_${task_period}_${phon}_${poolTask}_decode_crossPtTask"
             echo $job_name
-            sbatch -J $job_name run_decoder.sh \
+            sbatch -J $job_name run_crosspt_decoder.sh \
                 -s ${subject} -b "${bids_root}" -t ${task} \
-                -p ${phon} -n ${nPhons} -f ${nFolds} -i ${nIter} \
+                -p ${phon} -o ${poolTask} -f ${nFolds} -i ${nIter} \
                 -w ${twMin} -x ${twMax} \
                 -d ${description} -u ${suffix} -e ${extension} \
-                -a "${datatype}" -c ${chance}
+                -a "${datatype}"
             echo "----------------------------------------"
         done
     done

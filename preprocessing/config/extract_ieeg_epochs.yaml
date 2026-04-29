@@ -1,8 +1,11 @@
 bids_root: ???
+# bids_root: ~/cworkspace/BIDS_1.0_Lexical_µECoG/BIDS
 
 patient: ???
+# patient: S41
 
 task: ???
+# task: lexical
 
 load_kwargs:
   # passed to raw_from_layout
@@ -13,8 +16,12 @@ reference: CAR
 sig_channels: true
 
 # Shared preprocessing / QC
+# trial_selection:
+#   method: 1
+#   threshold: 10
+#   chan_thresh: 0.8
 trial_selection:
-  method: 1
+  method: 2
   threshold: 10
   chan_thresh: 0.8
 
@@ -26,3 +33,8 @@ task_periods:
 features:
   - high_gamma
   - spike_band
+
+# Phoneme-level processing (set to true to swap to phonemeLevel raw
+# for feature extraction; QC still runs on the main raw)
+phoneme_level: false
+derivative_name: phonemeLevel

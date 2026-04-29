@@ -1,183 +1,112 @@
-import argparse
-import os
+import sys
+import logging
+
+import hydra
+from omegaconf import DictConfig, OmegaConf
 from pathlib import Path
 from sklearn.svm import SVC
 from sklearn.pipeline import make_pipeline
 from sklearn.decomposition import PCA
 from mne_bids import BIDSPath
 
-from PhonemeDatasetBIDS import PhonemeDatasetBIDS
-from decoders import DimRedReshape, decodeResultsBIDS
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-userPath = os.path.expanduser('~')
-DERIV_ROOT = Path(userPath) / 'cworkspace' / 'BIDS_1.0_Lexical_µECoG' / 'BIDS' / 'derivatives'
-RESULTS_ROOT = DERIV_ROOT / 'decoding'
+from utils.dataset import PhonemeDatasetBIDS
+from utils.decoders import DimRedReshape, decodeResultsBIDS
 
-
-def parse_args():
-    parser = argparse.ArgumentParser(
-        description="Decode phoneme information from BIDS formatted data."
-    )
-    parser.add_argument(
-        'bidsRoot',
-        type=str,
-        help='Path to BIDS root directory (likely derivatives section).'
-    )
-    parser.add_argument(
-        'subject',
-        type=str,
-        help='Subject identifier (e.g., "01").'
-    )
-    parser.add_argument(
-        'phonemeIdx',
-        type=int,
-        help='Phoneme index to decode (1, 2, 3) or -1 for all phonemes.'
-    )
-    parser.add_argument(
-        '--nPhons',
-        type=int,
-        default=3,
-        help='Total number of phonemes in the sequence (default: 3).'
-    )
-    parser.add_argument(
-        '--nFolds',
-        type=int,
-        default=20,
-        help='Number of cross-validation folds (default: 20).'
-    )
-    parser.add_argument(
-        '--nIter',
-        type=int,
-        default=50,
-        help='Number of decoding iterations (default: 50).'
-    )
-    parser.add_argument(
-        '--chance',
-        type=str,
-        default='false',
-        help='Whether to calculate chance levels of decoding or not (default: "false").'
-    )
-    parser.add_argument(
-        '--tw',
-        type=float,
-        nargs=2,
-        default=[None, None],
-        help='Time window (in seconds) to use for decoding, e.g.,'
-             '--tw -0.5 1.0. Default is full epoch.'
-    )
-    parser.add_argument(
-        '--description',
-        type=str,
-        default='productionMeanSub',
-        help='Description field to match in BIDSPath (default: "productionMeanSub").'
-    )
-    parser.add_argument(
-        '--suffix',
-        type=str,
-        default='highgamma',
-        help='Suffix of the BIDS file to load (default: "highgamma").'
-    )
-    parser.add_argument(
-        '--extension',
-        type=str,
-        default='.fif',
-        help='File extension of the BIDS file to load (default: ".fif").'
-    )
-    parser.add_argument(
-        '--task',
-        type=str,
-        default='PhonemeSequence',
-        help='Task label in BIDS (default: "phonemeSequence").'
-    )
-    parser.add_argument(
-        '--datatype',
-        type=str,
-        default='epoch(band)(power)',
-        help='Data type in BIDS (default: "epoch(band)(power)").'
-    )
-    return parser.parse_args()
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(levelname)s - %(message)s',
+    datefmt='%Y-%m-%d %H:%M:%S',
+    stream=sys.stdout,
+)
+logger = logging.getLogger(__name__)
 
 
-def load_data(bidsRoot, subject, phonemeIdx, nPhons=3, tw=[None, None], **kwargs):
-    dataset = PhonemeDatasetBIDS(bidsRoot, subject, phonemeIdx, nPhons, tw,
-                                 **kwargs)
-    X, y = dataset.get_data()
-    return X, y, dataset.twEpoch
+def build_output_path(cfg, twEpoch, results_root):
+    """Construct a BIDSPath for saving decoding results."""
+    description = cfg.description
+    phase = ('Perception' if 'perception' in description.lower()
+             else 'Production')
+    band = cfg.suffix
 
-
-def main(bidsRoot, subject, phonemeIdx, nPhons=3, nFolds=20, nIter=50,
-         tw=[None, None], compute_chance=False, **kwargs):
-    X, y, twEpoch = load_data(bidsRoot, subject, phonemeIdx, nPhons, tw,
-                              **kwargs)
-
-    clf = SVC(kernel='rbf', class_weight='balanced')
-    pca = DimRedReshape(PCA, n_components=0.8)
-    model = make_pipeline(pca, clf)
-
-    decodeHandler = decodeResultsBIDS(
-        model=model,
-        nFolds=nFolds,
-        nIter=nIter,
-    )
-    decodeHandler.run_decoding(X, y, compute_chance=compute_chance)
-
-    if 'perception' in kwargs.get('description', '').lower():
-        phase = 'Perception'
+    if 'zscore' in description.lower():
+        norm_type = 'Zscore'
+    elif 'meansub' in description.lower():
+        norm_type = 'MeanSub'
     else:
-        phase = 'Production'
+        norm_type = 'raw'
 
-    if 'spikeBand' in kwargs.get('suffix', ''):
-        band = 'spikeBand'
-    else:
-        band = 'highgamma'
+    tw_fmt = ['pre' if twEpoch[0] < 0 else 'post',
+              'pre' if twEpoch[1] < 0 else 'post']
+    tw_str = (f"[{tw_fmt[0]}{abs(twEpoch[0]):.2g},"
+              f"{tw_fmt[1]}{abs(twEpoch[1]):.2g}]")
 
-    if 'zscore' in kwargs.get('description', '').lower():
-        normType = 'Zscore'
-    elif 'meansub' in kwargs.get('description', '').lower():
-        normType = 'MeanSub'
-    else:
-        normType = 'raw'
+    sig_str = 'sig' if 'sig' in cfg.datatype else 'all'
 
-    twFmt = ['pre' if twEpoch[0] < 0 else 'post',
-             'pre' if twEpoch[1] < 0 else 'post']
-    twStr = f"[{twFmt[0]}{abs(twEpoch[0]):.2g},{twFmt[1]}{abs(twEpoch[1]):.2g}]"
+    datatype_str = 'decode(production)(patientSpecific)'
+    if cfg.compute_chance:
+        datatype_str += '(chance)'
 
-    sigStr = 'sig' if 'sig' in kwargs.get('datatype', '') else 'all'
-
-    datatypeStr = 'decode(production)(patientSpecific)'
-    if compute_chance:
-        datatypeStr += '(chance)'
+    phoneme_suffix = ('pAll' if cfg.phoneme_idx == -1
+                      else f'p{cfg.phoneme_idx}')
 
     outpath = BIDSPath(
-        root=RESULTS_ROOT,
-        subject=subject,
-        datatype=datatypeStr,
-        description=f"{band}({phase})({normType})(tw{twStr})({sigStr}Channel)",
-        suffix=f"p{'All' if phonemeIdx == -1 else phonemeIdx}",
+        root=results_root,
+        subject=cfg.patient,
+        datatype=datatype_str,
+        description=(f"{band}({phase})({norm_type})"
+                     f"(tw{tw_str})({sig_str}Channel)"),
+        suffix=phoneme_suffix,
         extension='.h5',
         check=False,
     )
+    return outpath
+
+
+@hydra.main(version_base=None, config_path="config",
+            config_name="decode_phonemes")
+def main(cfg: DictConfig) -> None:
+    missing_keys = OmegaConf.missing_keys(cfg)
+    if missing_keys:
+        raise RuntimeError(f'Missing configuration keys: {missing_keys}')
+
+    logger.info(f'Running with configuration:\n{OmegaConf.to_yaml(cfg)}')
+
+    bids_root = Path(cfg.bids_root).expanduser()
+
+    tw = (OmegaConf.to_container(cfg.time_window)
+          if cfg.time_window is not None else [None, None])
+
+    logger.info(f'Loading data for subject {cfg.patient}...')
+    dataset = PhonemeDatasetBIDS(
+        bids_root, cfg.patient, cfg.phoneme_idx, cfg.n_phons, tw,
+        description=cfg.description, suffix=cfg.suffix,
+        extension=cfg.extension, task=cfg.task, datatype=cfg.datatype)
+    X, y = dataset.get_data()
+    logger.info(f'Loaded data: X={X.shape}, y={y.shape}, '
+                f'tw={dataset.twEpoch}')
+
+    pca = DimRedReshape(PCA, n_components=cfg.pca_variance)
+    clf = SVC(kernel=cfg.svm_kernel, class_weight='balanced')
+    model = make_pipeline(pca, clf)
+
+    decoder = decodeResultsBIDS(
+        model=model, nFolds=cfg.n_folds, nIter=cfg.n_iter)
+    logger.info(f'Running decoding ({cfg.n_iter} iterations, '
+                f'{cfg.n_folds} folds, chance={cfg.compute_chance})...')
+    decoder.run_decoding(X, y, compute_chance=cfg.compute_chance)
+
+    if cfg.results_root is not None:
+        results_root = Path(cfg.results_root).expanduser()
+    else:
+        results_root = bids_root.parent / 'decoding'
+
+    outpath = build_output_path(cfg, dataset.twEpoch, results_root)
     outpath.mkdir(exist_ok=True)
-    decodeHandler.save_results(outpath.fpath, overwrite=True)
+    logger.info(f'Saving results to {outpath.fpath}')
+    decoder.save_results(outpath.fpath, overwrite=True)
 
 
-if __name__ == '__main__':
-    args = parse_args()
-
-    chance = args.chance.lower() == 'true'
-
-    main(
-        bidsRoot=args.bidsRoot,
-        subject=args.subject,
-        phonemeIdx=args.phonemeIdx,
-        nPhons=args.nPhons,
-        nFolds=args.nFolds,
-        nIter=args.nIter,
-        tw=args.tw,
-        compute_chance=chance,
-        description=args.description,
-        suffix=args.suffix,
-        extension=args.extension,
-        task=args.task,
-        datatype=args.datatype,
-    )
+if __name__ == "__main__":
+    main()

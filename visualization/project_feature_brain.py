@@ -24,7 +24,7 @@ from scipy.spatial import cKDTree
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from utils import snake2camel
+from preprocessing.utils import snake2camel
 
 logging.basicConfig(
     level=logging.INFO,

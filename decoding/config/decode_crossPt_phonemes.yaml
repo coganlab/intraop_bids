@@ -1,0 +1,33 @@
+bids_root: ???
+patient: ???
+task: ???
+
+phoneme_idx: -1    # -1 for all phonemes, 1..N for specific position
+pool_task: all     # phoneme | lexical | all
+
+# BIDS file matching
+description: productionMeanSub
+suffix: highgamma
+extension: .fif
+datatype: "epoch(band)(power)"
+
+# Cross-patient dataset roots
+ps_root: "~/cworkspace/BIDS_1.0_Phoneme_Sequence_uECoG/BIDS/derivatives/epoch(phonemeLevel)(CAR)"
+
+# Subject cohorts
+ps_subjects: [S14, S22, S23, S26, S33, S39, S58, S62]
+lex_subjects: [S41, S45, S47, S55, S56, S63, S67, S73, S74, S75, S76, S78]
+
+# Decoding parameters
+n_folds: 20
+n_iter: 10
+pca_variance_align: 0.9
+pca_variance_decode: 0.8
+svm_kernel: rbf
+decode_tw: [-0.5, 0.5]
+
+# Time window for alignment (null = full epoch)
+time_window: null
+
+# Output (null = auto-derived from bids_root)
+results_root: null

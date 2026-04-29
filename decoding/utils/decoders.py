@@ -27,7 +27,8 @@ class DimRedReshape(BaseEstimator):
     def fit_transform(self, X, y=None):
         self.fit(X)
         return self.transform(X)
-    
+
+
 class decodeResultsBIDS:
     def __init__(self, model, nFolds, nIter, scores=None, y_preds=None,
                  scorer='balanced_accuracy'):
@@ -43,15 +44,16 @@ class decodeResultsBIDS:
         y_preds = np.zeros((self.nIter, len(y)))
         cv = StratifiedKFold(n_splits=self.nFolds, shuffle=True)
 
-        # check that stratification is possible
         try:
             list(cv.split(X, y))
-        except ValueError as e:
+        except ValueError:
             cv = KFold(n_splits=self.nFolds, shuffle=True)
 
         for i in tqdm(range(self.nIter), desc='Decoding iterations'):
-            score, y_pred = self.decode_iter(X, y, cv, compute_chance=compute_chance)
-            print(f"Iteration: {i+1} - {self.scorer.__name__}: {score:.4f}", flush=True)
+            score, y_pred = self.decode_iter(X, y, cv,
+                                             compute_chance=compute_chance)
+            print(f"Iteration: {i+1} - {self.scorer.__name__}: {score:.4f}",
+                  flush=True)
             scores[i] = score
             y_preds[i] = y_pred
         self.scores = scores
@@ -71,17 +73,19 @@ class decodeResultsBIDS:
             y_pred = cross_val_predict(self.model, X, y, cv=cv, n_jobs=-1)
         acc = self.scorer(y, y_pred)
         return acc, y_pred
-    
+
     def to_dict(self):
         return {
             'model': make_json_serializable(self.model.get_params()),
             'nFolds': self.nFolds,
             'nIter': self.nIter,
-            'scores': self.scores.tolist() if self.scores is not None else None,
-            'y_preds': self.y_preds.tolist() if self.y_preds is not None else None,
+            'scores': (self.scores.tolist()
+                       if self.scores is not None else None),
+            'y_preds': (self.y_preds.tolist()
+                        if self.y_preds is not None else None),
             'scorer': self.scorer.__name__,
         }
-    
+
     def save_results(self, bidsPath, overwrite=True):
         if self.scores is None or self.y_preds is None:
             raise ValueError("No results to save. Run decoding first.")
@@ -105,11 +109,10 @@ def make_json_serializable(obj):
     elif callable(obj):
         return f"<function {obj.__module__}.{obj.__name__}>"
     elif hasattr(obj, "__class__"):
-        # Handle sklearn transformers, classes, etc.
         return f"<{obj.__class__.__module__}.{obj.__class__.__name__}>"
     else:
         try:
             json.dumps(obj)
-            return obj  # already serializable
+            return obj
         except TypeError:
             return str(obj)

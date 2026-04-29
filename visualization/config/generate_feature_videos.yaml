@@ -1,0 +1,25 @@
+bids_root: ???
+
+patient: ???
+
+task: ???
+
+# Must match the reference scheme used during epoch extraction
+reference: CAR
+
+task_periods:
+  - perception
+  - production
+
+features:
+  - high_gamma
+  - spike_band
+
+# Video generation settings
+figsize: [12, 8]
+fps: 30
+cmap: vlag
+
+# Colorbar bounds (null for auto-scaling)
+cbar_lower: null
+cbar_upper: null

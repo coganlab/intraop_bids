@@ -10,10 +10,10 @@ import logging
 import mne
 import numpy as np
 
-from utils.stats import find_channel_outliers, remove_bad_trials
-from utils.referencing import (set_white_matter_reference,
-                               set_laplacian_reference)
-from utils.dataloaders import load_raw
+from .stats import find_channel_outliers, remove_bad_trials
+from .referencing import (set_white_matter_reference,
+                          set_laplacian_reference)
+from .dataloaders import load_raw
 
 logger = logging.getLogger(__name__)
 
@@ -83,6 +83,21 @@ def get_good_trials(data, threshold=10, method=1, chan_thresh=0.8):
     good_trials_common = np.sum(good_trials, axis=0) >= (chan_thresh * nChans)
 
     return good_trials_common
+
+
+def preprocess_derivative_raw(raw_derivative, raw_reference, reference='CAR'):
+    """Preprocess a derivative raw using bad channels from a reference raw.
+
+    Applies the same notch filter and re-referencing as the main pipeline,
+    but skips outlier detection -- bad channels are copied from the already-
+    preprocessed reference raw instead.
+    """
+    bads = raw_reference.info['bads']
+    shared_bads = [b for b in bads if b in raw_derivative.ch_names]
+    set_bad_channels(raw_derivative, shared_bads)
+    remove_powerline_noise(raw_derivative)
+    raw_derivative = set_reference(raw_derivative, reference)
+    return raw_derivative
 
 
 def preprocess_raw(bids_layout, patient, reference='CAR', load_kwargs=None):

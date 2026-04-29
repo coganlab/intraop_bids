@@ -1,9 +1,9 @@
 #!/bin/bash
-#SBATCH --output=/hpc/home/zms14/cworkspace/jobs/extract_epochs/%j.out
-#SBATCH -e /hpc/home/zms14/cworkspace/jobs/extract_epochs/%j.error
+#SBATCH --output=/hpc/home/zms14/cworkspace/jobs/brain_projection/%j.out
+#SBATCH -e /hpc/home/zms14/cworkspace/jobs/brain_projection/%j.error
 #SBATCH -p common,scavenger
-#SBATCH -c 25
-#SBATCH --mem=128G
+#SBATCH -c 10
+#SBATCH --mem=32G
 
 # ----------------------------
 # Load environment
@@ -15,23 +15,21 @@ conda activate ieeg
 # Arguments
 # ----------------------------
 SUBJECT=""
-TASK="lexical"
 BIDS_ROOT="/hpc/home/zms14/cworkspace/BIDS_1.0_Lexical_µECoG/BIDS"
+TASK="lexical"
+SUBJECTS_DIR="/hpc/home/zms14/cworkspace/ECoG_Recon"
 FEATURES="high_gamma"
-TASK_PERIOD="production"
-USE_SIG=false
-PHONEME_LEVEL=false
+TASK_PERIOD="[perception,production]"
 
-while getopts s:b:t:f:p:u:l: flag
+while getopts s:b:t:d:f:p: flag
 do
     case "${flag}" in
         s) SUBJECT=${OPTARG};;
         b) BIDS_ROOT=${OPTARG};;
         t) TASK=${OPTARG};;
+        d) SUBJECTS_DIR=${OPTARG};;
         f) FEATURES=${OPTARG};;
         p) TASK_PERIOD=${OPTARG};;
-        u) USE_SIG=${OPTARG};;
-        l) PHONEME_LEVEL=${OPTARG};;
     esac
 done
 
@@ -43,16 +41,13 @@ fi
 # ----------------------------
 # Run script with Hydra config
 # ----------------------------
-# cd ../..
 cd ..
-echo "Extracting epochs for subject ${SUBJECT} with features ${FEATURES} and task period ${TASK_PERIOD} (phoneme_level=${PHONEME_LEVEL})"
-# python preprocessing/extract_ieeg_epochs.py \
-python extract_ieeg_epochs.py \
+echo "Projecting features onto brain for subject ${SUBJECT}"
+python project_feature_brain.py \
     patient=${SUBJECT} \
     "bids_root='${BIDS_ROOT}'" \
     task=${TASK} \
+    "subjects_dir='${SUBJECTS_DIR}'" \
     features=${FEATURES} \
     task_periods=${TASK_PERIOD} \
-    sig_channels=${USE_SIG} \
-    phoneme_level=${PHONEME_LEVEL} \
     hydra.run.dir=/hpc/home/zms14/cworkspace/outputs/${SLURM_JOB_NAME}_${SLURM_JOB_ID}

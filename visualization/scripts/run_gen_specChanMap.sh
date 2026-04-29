@@ -1,9 +1,9 @@
 #!/bin/bash
-#SBATCH --output=/hpc/home/zms14/cworkspace/jobs/extract_epochs/%j.out
-#SBATCH -e /hpc/home/zms14/cworkspace/jobs/extract_epochs/%j.error
+#SBATCH --output=/hpc/home/zms14/cworkspace/jobs/specChanMap/%j.out
+#SBATCH -e /hpc/home/zms14/cworkspace/jobs/specChanMap/%j.error
 #SBATCH -p common,scavenger
 #SBATCH -c 25
-#SBATCH --mem=128G
+#SBATCH --mem=64G
 
 # ----------------------------
 # Load environment
@@ -15,23 +15,19 @@ conda activate ieeg
 # Arguments
 # ----------------------------
 SUBJECT=""
-TASK="lexical"
 BIDS_ROOT="/hpc/home/zms14/cworkspace/BIDS_1.0_Lexical_µECoG/BIDS"
-FEATURES="high_gamma"
+TASK="lexical"
 TASK_PERIOD="production"
-USE_SIG=false
-PHONEME_LEVEL=false
+RECOMPUTE="false"
 
-while getopts s:b:t:f:p:u:l: flag
+while getopts s:b:t:p:r: flag
 do
     case "${flag}" in
         s) SUBJECT=${OPTARG};;
         b) BIDS_ROOT=${OPTARG};;
         t) TASK=${OPTARG};;
-        f) FEATURES=${OPTARG};;
         p) TASK_PERIOD=${OPTARG};;
-        u) USE_SIG=${OPTARG};;
-        l) PHONEME_LEVEL=${OPTARG};;
+        r) RECOMPUTE=${OPTARG};;
     esac
 done
 
@@ -45,14 +41,12 @@ fi
 # ----------------------------
 # cd ../..
 cd ..
-echo "Extracting epochs for subject ${SUBJECT} with features ${FEATURES} and task period ${TASK_PERIOD} (phoneme_level=${PHONEME_LEVEL})"
+echo "Generating spectrogram channel map for subject ${SUBJECT} with task ${TASK} and task period ${TASK_PERIOD}"
 # python preprocessing/extract_ieeg_epochs.py \
-python extract_ieeg_epochs.py \
+python generate_specChanMap.py \
     patient=${SUBJECT} \
     "bids_root='${BIDS_ROOT}'" \
     task=${TASK} \
-    features=${FEATURES} \
     task_periods=${TASK_PERIOD} \
-    sig_channels=${USE_SIG} \
-    phoneme_level=${PHONEME_LEVEL} \
+    recompute=${RECOMPUTE} \
     hydra.run.dir=/hpc/home/zms14/cworkspace/outputs/${SLURM_JOB_NAME}_${SLURM_JOB_ID}

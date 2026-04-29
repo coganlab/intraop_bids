@@ -1,0 +1,33 @@
+bids_root: ???
+# bids_root: ~/cworkspace/BIDS_1.0_Lexical_µECoG/BIDS
+
+patient: ???
+# patient: S78
+
+task: ???
+# task: lexical
+
+load_kwargs:
+  # passed to raw_from_layout
+  preload: true
+
+reference: CAR
+
+# Shared preprocessing / QC
+trial_selection:
+  method: 1
+  threshold: 8
+  chan_thresh: 0.8
+
+recompute: false
+# recompute: true
+
+frequencies:
+  _target_: numpy.arange
+  start: 1
+  stop: 200
+  step: 2
+
+task_periods:
+  - perception
+  - production
