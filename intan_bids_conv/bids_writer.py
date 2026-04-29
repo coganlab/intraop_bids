@@ -100,7 +100,7 @@ def remove_arpabet_stress(phoneme: str) -> str:
     return re.sub(r'\d', '', phoneme)
 
 
-def remove_orphan_stimuli(events_df, response_window_sec=3.0):
+def remove_orphan_stimuli(events_df, response_window_sec=4.0):
     """Drop stimulus rows that lack a matching response within *response_window_sec*."""
     base_types = events_df['trial_type'].str.split('/').str[0]
     is_stim = base_types == 'stimulus'
@@ -504,6 +504,17 @@ class BIDSConverter:
             root=str(self.bids_root), derivatives=True,
         )
         save_derivative(self.raw, bids_layout, 'phonemeLevel', overwrite)
+
+        if hasattr(self, '_ch_index_to_type'):
+            deriv_path = BIDSPath(
+                root=self.bids_root / 'derivatives' / 'phonemeLevel',
+                subject=self.subject,
+                task=self.task,
+                datatype='ieeg',
+                suffix='ieeg',
+                check=False,
+            )
+            self._add_electrode_type_to_tsvs(deriv_path, verbose=verbose)
 
         subj_dir = self.source_path / f'sub-{self.subject}'
         stim_phon_file = [subj_dir / 'mfa_adj_stim_phones.txt', subj_dir / 'mfa_stim_phones.txt']
