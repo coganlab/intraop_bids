@@ -67,14 +67,18 @@ class rhdLoader:
         self.fileIDs = (int(fileIDs[0]), int(fileIDs[1])) if fileIDs is not None else None
 
         if array_type is None:
-            arr_types = ['128-strip', '256-grid', '256-strip', '256-strip-old', '1024-grid-S82', 'hybrid-strip']
+            # arr_types = ['128-strip', '256-grid', '256-strip', '256-strip-old', '1024-grid-S82', 'hybrid-strip', 'hybrid-strip-old']
+            arr_types = Path(__file__).parent / 'channel_maps'
+            arr_types = [f.stem for f in arr_types.glob('*.mat')]
             types = '/'.join(arr_types)
-            resp = input(f'Please specify array type {types}:')
+            resp = input(f'Please specify array type ({types}):')
             if resp in arr_types:
-                array_type = resp
+                array_type = resp.split('.')[0]
             else:
-                raise ValueError('Invalid array type specified. This type may'
+                raise ValueError('Invalid array type specified. This type may '
                                  'not be implemented yet.')
+        else:
+            array_type = array_type.split('.')[0]
         if num_arrays > 1:
             self.channel_map = self._build_composite_channel_map(
                 array_type, num_arrays,
