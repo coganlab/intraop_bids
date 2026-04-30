@@ -113,7 +113,7 @@ def remove_bad_trials(
             e = np.max(np.abs(tmp), axis=1)
             mask = (e < th) & (e != 0)
         elif method == 2:
-            difftmp = np.diff(tmp, axis=1)
+            difftmp = np.abs(np.diff(tmp, axis=1))
             e = np.max(difftmp, axis=1)
             mask = e < threshold
         else:
