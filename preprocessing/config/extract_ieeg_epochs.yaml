@@ -22,7 +22,7 @@ sig_channels: true
 #   chan_thresh: 0.8
 trial_selection:
   method: 2
-  threshold: 10
+  threshold: 50
   chan_thresh: 0.8
 
 
