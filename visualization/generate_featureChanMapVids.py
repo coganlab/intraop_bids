@@ -129,7 +129,7 @@ def main(cfg: DictConfig):
 
             epochs = precomputed_features[feature_key]
             data = epochs.get_data()
-            mean_data = np.mean(data, axis=0)  # (channels, time_points)
+            mean_data = np.nanmean(data, axis=0)  # (channels, time_points)
             data_timeseries = mean_data.T       # (time_points, channels)
 
             times = epochs.times

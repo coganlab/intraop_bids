@@ -297,7 +297,7 @@ def compute_channel_values(epochs, time_window=None):
         epochs = epochs.copy().crop(tmin=time_window[0], tmax=time_window[1])
 
     data = epochs.get_data()  # (n_epochs, n_channels, n_times)
-    return np.mean(data, axis=(0, 2))  # mean over epochs and time
+    return np.nanmean(data, axis=(0, 2))  # mean over epochs and time
 
 
 def values_to_colors(values, cmap_name='hot'):

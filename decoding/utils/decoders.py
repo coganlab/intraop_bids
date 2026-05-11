@@ -2,9 +2,47 @@ import json
 import h5py
 import numpy as np
 from tqdm import tqdm
-from sklearn.base import BaseEstimator
+from sklearn.base import BaseEstimator, TransformerMixin
 from sklearn.model_selection import cross_val_predict, StratifiedKFold, KFold
 from sklearn.metrics import get_scorer
+
+
+class NaNImputer3D(BaseEstimator, TransformerMixin):
+    """Impute NaN values in 3D epoch arrays using per-channel training means.
+
+    During ``fit``, computes the mean waveform for each channel across
+    non-NaN training trials.  During ``transform``, replaces any
+    trial-channel slice that contains NaN with the fitted channel mean.
+
+    Parameters
+    ----------
+    noise_scale : float, optional
+        If > 0, adds Gaussian noise scaled to ``noise_scale * channel_std``
+        to imputed values.  Useful for preventing identical imputed vectors.
+        Defaults to 0 (deterministic mean imputation).
+    """
+
+    def __init__(self, noise_scale=0.0):
+        self.noise_scale = noise_scale
+
+    def fit(self, X, y=None):
+        self.fill_values_ = np.nanmean(X, axis=0)
+        if self.noise_scale > 0:
+            self.fill_stds_ = np.nanstd(X, axis=0)
+        return self
+
+    def transform(self, X, y=None):
+        X_out = X.copy()
+        nan_mask = np.isnan(X_out)
+        if not np.any(nan_mask):
+            return X_out
+        means = np.broadcast_to(self.fill_values_, X_out.shape)
+        X_out[nan_mask] = means[nan_mask]
+        if self.noise_scale > 0:
+            stds = np.broadcast_to(self.fill_stds_, X_out.shape)
+            noise = np.random.randn(*X_out.shape) * self.noise_scale * stds
+            X_out[nan_mask] += noise[nan_mask]
+        return X_out
 
 
 class DimRedReshape(BaseEstimator):
