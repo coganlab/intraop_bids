@@ -7,25 +7,26 @@
 
 bids_root="~/cworkspace/BIDS_1.0_Lexical_µECoG/BIDS"
 task="lexical"
-subj_arr=("S41")
-# subj_arr=("S41" "S45" "S47" "S51" "S52" "S53" "S55" "S56" "S63" "S67" "S73" "S74" "S75" "S76" "S78" "S81" "S83")
+subj_arr=("S82")
+# subj_arr=("S30" "S82" "S83")
+# subj_arr=("S41" "S45" "S47" "S51" "S52" "S53" "S55" "S56" "S63" "S67" "S73" "S74" "S75" "S76" "S78" "S81")
 # subj_arr=("S41" "S45" "S47" "S51" "S52" "S53" "S55" "S56" "S63" "S67" "S73" "S74" "S75" "S76" "S78" "S81")
 # subj_arr=("S30" "S52")
-# subj_arr=("S41" "S45" "S47" "S56" "S67")
+# subj_arr=("S56" "S67")
 
 
-# features="[high_gamma,spike_band]"
-features="[high_gamma]"
+features="[high_gamma,spike_band]"
+# features="[high_gamma]"
 # features="[spike_band]"
 task_period="[perception,production]"
 # task_period="perception"
 # task_period="production"
 
-useSig=true  # leave this lower case
-# useSig=false  # leave this lower case
+# useSig=true  # leave this lower case
+useSig=false  # leave this lower case
 
-# phonemeLevel=true  # leave this lower case
-phonemeLevel=false  # leave this lower case
+phonemeLevel=true  # leave this lower case
+# phonemeLevel=false  # leave this lower case
 
 
 for subject in "${subj_arr[@]}"; do

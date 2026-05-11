@@ -1,0 +1,30 @@
+# Subject -> electrode array type lookup for the lexical uECoG cohort.
+#
+# Populate / correct entries here when new subjects are added or when
+# you confirm a subject's array geometry.  Used by the pitch
+# subsampling pipeline to resolve the base electrode pitch.
+#
+# TODO(user): verify per-subject array_type assignments.  Defaults
+# below assume the bulk of the cohort used the 256-grid array; S82 is
+# known to be the 1024-grid array (per channel-map filename).
+
+S30: 256-grid
+S41: 256-grid
+S45: 256-grid
+S47: 256-grid
+S51: 256-grid
+S52: 256-grid
+S53: 256-grid
+S55: 256-grid
+S56: 256-grid
+S63: 256-grid
+S67: 256-grid
+S71: 256-grid
+S73: 256-grid
+S74: 256-grid
+S75: 256-grid
+S76: 256-grid
+S78: 256-grid
+S81: 256-grid
+S82: 1024-grid-S82
+S83: 256-grid

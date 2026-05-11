@@ -1,0 +1,13 @@
+bids_root: ???
+patient: ???
+task: ???
+
+load_kwargs:
+  preload: true
+
+# List of square contact sizes (in original-grid cells) to generate
+# spatial-average derivatives for.  Each value writes a separate
+# `desc-contact{N}_ieeg.edf` derivative.
+contact_sizes: [2, 4, 8]
+
+overwrite: true

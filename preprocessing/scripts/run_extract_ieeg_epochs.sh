@@ -3,7 +3,7 @@
 #SBATCH -e /hpc/home/zms14/cworkspace/jobs/extract_epochs/%j.error
 #SBATCH -p common,scavenger
 #SBATCH -c 25
-#SBATCH --mem=128G
+#SBATCH --mem=512G
 
 # ----------------------------
 # Load environment

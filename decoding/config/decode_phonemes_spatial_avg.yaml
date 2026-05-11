@@ -1,0 +1,29 @@
+bids_root: ???    # path to the spatial-avg epoch derivative root
+                  # e.g. .../derivatives/epoch(spatialAvgContact4)(CAR)
+
+patient: ???
+task: ???
+
+phoneme_idx: -1
+n_phons: 5
+
+description: productionMeanSub
+suffix: highgamma
+extension: .fif
+datatype: "epoch(band)(power)"
+
+n_folds: 20
+compute_chance: false
+
+# Spatial-average parameters (informational; the actual averaging
+# already happened in preprocessing -- this value just goes into the
+# output filename for clarity)
+contact_size: ???
+n_subsample_iters: 50
+
+time_window: null
+
+pca_variance: 0.8
+svm_kernel: rbf
+
+results_root: null

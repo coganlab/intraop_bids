@@ -9,16 +9,16 @@ nPhons=5
 
 nFolds=10
 nIter=50
-# chance=true
-chance=false
+chance=true
+# chance=false
 twMin=-0.5
 twMax=0.5
 
 task_periods=("perception" "production")
 norm_type="MeanSub"
 # description="Zscore"
-suffix="highGamma"
-# suffix="spikeBand"
+# suffix="highGamma"
+suffix="spikeBand"
 extension=".fif"
 task="lexical"
 datatype="epoch(band)(power)(sig)"

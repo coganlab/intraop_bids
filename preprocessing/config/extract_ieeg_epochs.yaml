@@ -15,15 +15,13 @@ reference: CAR
 
 sig_channels: true
 
-# Shared preprocessing / QC
-# trial_selection:
-#   method: 1
-#   threshold: 10
-#   chan_thresh: 0.8
+# Per-channel trial QC (bad trial-channel pairs are NaN-masked, not dropped)
 trial_selection:
-  method: 2
-  threshold: 50
-  chan_thresh: 0.8
+  method: 1
+  threshold: 10
+# trial_selection:
+#   method: 2
+#   threshold: 30
 
 
 task_periods:
@@ -38,3 +36,14 @@ features:
 # for feature extraction; QC still runs on the main raw)
 phoneme_level: false
 derivative_name: phonemeLevel
+
+# Spatial-average mode: when enabled, the raw input is loaded from the
+# derivatives/spatialAvg/ recording produced by spatial_avg_raw.py
+# (no preprocessing applied before averaging).  This script then runs
+# the full preprocessing pipeline (outlier detection + notch + CAR)
+# on the averaged data and writes epochs to
+# derivatives/epoch(spatialAvgContact{N})({reference})/.
+spatial_avg:
+  enabled: false
+  contact_size: null            # required when enabled
+  derivative_name: spatialAvg

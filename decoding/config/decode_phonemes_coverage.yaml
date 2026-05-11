@@ -1,0 +1,27 @@
+bids_root: ???
+layout_root: null
+
+patient: ???
+task: ???
+
+phoneme_idx: -1
+n_phons: 5
+
+description: productionMeanSub
+suffix: highgamma
+extension: .fif
+datatype: "epoch(band)(power)"
+
+n_folds: 20
+compute_chance: false
+
+# Coverage subsampling parameters
+win_size: [4, 4]            # (rows, cols)
+extra_iters_per_subgrid: 1  # >1 averages over multiple CV resamples per subgrid
+
+time_window: null
+
+pca_variance: 0.8
+svm_kernel: rbf
+
+results_root: null

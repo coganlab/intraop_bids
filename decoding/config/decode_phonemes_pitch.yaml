@@ -1,0 +1,37 @@
+bids_root: ???
+# Path to the raw BIDS root used to load channels.tsv / chanmap.
+# Defaults to bids_root.parent.parent if null (i.e. derivative root
+# .../derivatives/epoch(...)/ -> raw BIDS root two levels up).
+layout_root: null
+
+patient: ???
+task: ???
+
+phoneme_idx: -1    # -1 for all phonemes, 1..N for specific position
+n_phons: 5
+
+# BIDS file matching (which epoch derivative to load)
+description: productionMeanSub
+suffix: highgamma
+extension: .fif
+datatype: "epoch(band)(power)"
+
+# Decoding parameters
+n_folds: 20
+n_iter: 50            # legacy compatibility; not used as outer loop here
+compute_chance: false
+
+# Pitch subsampling parameters
+pitch_mm: ???          # target pitch in mm
+n_subsample_iters: 50  # fresh Poisson sample per iter
+seed: null             # int for reproducibility; null draws from OS entropy
+
+# Time window (null = full epoch)
+time_window: null
+
+# Model hyperparameters
+pca_variance: 0.8
+svm_kernel: rbf
+
+# Output (null = auto-derived from bids_root)
+results_root: null

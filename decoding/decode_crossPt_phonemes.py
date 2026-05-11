@@ -18,7 +18,7 @@ from mne_bids import BIDSPath
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from utils.dataset import PhonemeDatasetBIDS
-from utils.decoders import DimRedReshape, decodeResultsBIDS
+from utils.decoders import DimRedReshape, NaNImputer3D, decodeResultsBIDS
 from utils.alignment import AlignCCA
 from utils.crossPt_decoders import (crossPtDecoder_sepDimRed,
                                      crossPtDecoder_twSepAlign)
@@ -133,6 +133,7 @@ def aligned_decode(X_tar, y_tar, y_align_tar=None, aligner=None,
     if model is None:
         clf = SVC(kernel='rbf', class_weight='balanced')
         model = make_pipeline(
+            NaNImputer3D(),
             DimRedReshape(PCA, n_components=n_comp_decode), clf)
 
     cv = StratifiedKFold(n_splits=n_folds, shuffle=True)
@@ -276,9 +277,10 @@ def main(cfg: DictConfig) -> None:
         ps_root=str(ps_root), ps_subjects=ps_subjects, **bids_kwargs)
 
     # Build model
+    imputer = NaNImputer3D()
     clf = SVC(kernel=cfg.svm_kernel, class_weight='balanced')
     pca = DimRedReshape(PCA, n_components=cfg.pca_variance_decode)
-    model = make_pipeline(pca, clf)
+    model = make_pipeline(imputer, pca, clf)
 
     logger.info(f'Running cross-patient decoding ({cfg.n_iter} iterations, '
                 f'{cfg.n_folds} folds, {len(other_subjects)} source patients)')

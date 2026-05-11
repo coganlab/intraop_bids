@@ -85,6 +85,22 @@ def get_good_trials(data, threshold=10, method=1, chan_thresh=0.8):
     return good_trials_common
 
 
+def get_bad_trial_mask(data, threshold=10, method=1):
+    """Return per-channel good-trial mask without consensus reduction.
+
+    Unlike ``get_good_trials``, this preserves the per-channel dimension
+    so that downstream code can NaN-mask individual bad trial-channel
+    combinations instead of dropping entire trials.
+
+    Returns:
+        np.ndarray: Boolean array of shape ``(n_channels, n_trials)``.
+            ``True`` indicates a good (artifact-free) trial for that channel.
+    """
+    _, good_trials = remove_bad_trials(data, threshold=threshold,
+                                       method=method)
+    return good_trials
+
+
 def preprocess_derivative_raw(raw_derivative, raw_reference, reference='CAR'):
     """Preprocess a derivative raw using bad channels from a reference raw.
 
@@ -100,18 +116,15 @@ def preprocess_derivative_raw(raw_derivative, raw_reference, reference='CAR'):
     return raw_derivative
 
 
-def preprocess_raw(bids_layout, patient, reference='CAR', load_kwargs=None):
-    """Run the full preprocessing chain on a BIDS raw recording.
+def preprocess_raw_data(raw, reference='CAR'):
+    """Apply the standard preprocessing chain to an in-memory raw object.
 
-    Steps: load -> outlier detection -> notch filter -> re-reference.
-
-    Returns the preprocessed Raw object.
+    Steps: outlier detection -> notch filter -> re-reference.  Used
+    both by the standard pipeline (after loading a BIDS raw) and by
+    the spatial-average pipeline (after loading the averaged derivative
+    raw), so that the averaged recording is treated like a fresh
+    macro-contact array.
     """
-    if load_kwargs is None:
-        load_kwargs = {}
-
-    raw = load_raw(bids_layout, patient, **load_kwargs)
-
     bad_channels_detrend = find_channel_outliers(raw)
     logger.info(f"IEEG outlier channels (detrend): {bad_channels_detrend}")
     set_bad_channels(raw, bad_channels_detrend)
@@ -124,3 +137,17 @@ def preprocess_raw(bids_layout, patient, reference='CAR', load_kwargs=None):
     raw = set_reference(raw, reference)
 
     return raw
+
+
+def preprocess_raw(bids_layout, patient, reference='CAR', load_kwargs=None):
+    """Run the full preprocessing chain on a BIDS raw recording.
+
+    Steps: load -> outlier detection -> notch filter -> re-reference.
+
+    Returns the preprocessed Raw object.
+    """
+    if load_kwargs is None:
+        load_kwargs = {}
+
+    raw = load_raw(bids_layout, patient, **load_kwargs)
+    return preprocess_raw_data(raw, reference)

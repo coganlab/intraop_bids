@@ -12,7 +12,7 @@ from mne_bids import BIDSPath
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from utils.dataset import PhonemeDatasetBIDS
-from utils.decoders import DimRedReshape, decodeResultsBIDS
+from utils.decoders import DimRedReshape, NaNImputer3D, decodeResultsBIDS
 
 logging.basicConfig(
     level=logging.INFO,
@@ -87,9 +87,10 @@ def main(cfg: DictConfig) -> None:
     logger.info(f'Loaded data: X={X.shape}, y={y.shape}, '
                 f'tw={dataset.twEpoch}')
 
+    imputer = NaNImputer3D()
     pca = DimRedReshape(PCA, n_components=cfg.pca_variance)
     clf = SVC(kernel=cfg.svm_kernel, class_weight='balanced')
-    model = make_pipeline(pca, clf)
+    model = make_pipeline(imputer, pca, clf)
 
     decoder = decodeResultsBIDS(
         model=model, nFolds=cfg.n_folds, nIter=cfg.n_iter)
