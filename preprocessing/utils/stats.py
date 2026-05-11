@@ -157,18 +157,25 @@ def get_significant_channels(
         Applies FDR correction to control for multiple comparisons.
     """
     def mean_stat(X, Y, axis=-1):
-        return np.mean(X, axis=axis) - np.mean(Y, axis=axis)
+        return np.nanmean(X, axis=axis) - np.nanmean(Y, axis=axis)
 
     # average data within specified time windows
     tw_interest = data_interest.time_as_index(tw_interest)
     tw_baseline = data_baseline.time_as_index(tw_baseline)
 
-    data_interest_avg = data_interest._data[:, :, tw_interest[0]:tw_interest[1]].mean(axis=2)
-    data_baseline_avg = data_baseline._data[:, :, tw_baseline[0]:tw_baseline[1]].mean(axis=2)
+    data_interest_avg = np.nanmean(
+        data_interest._data[:, :, tw_interest[0]:tw_interest[1]], axis=2)
+    data_baseline_avg = np.nanmean(
+        data_baseline._data[:, :, tw_baseline[0]:tw_baseline[1]], axis=2)
 
     def compute_pvalue(ch):
-        res = permutation_test((data_interest_avg[:, ch],
-                                data_baseline_avg[:, ch]),
+        interest_ch = data_interest_avg[:, ch]
+        baseline_ch = data_baseline_avg[:, ch]
+        valid_i = interest_ch[~np.isnan(interest_ch)]
+        valid_b = baseline_ch[~np.isnan(baseline_ch)]
+        if len(valid_i) < 2 or len(valid_b) < 2:
+            return 1.0
+        res = permutation_test((valid_i, valid_b),
                                mean_stat,
                                vectorized=True,
                                alternative='greater',

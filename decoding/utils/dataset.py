@@ -53,5 +53,7 @@ class PhonemeDatasetBIDS:
             features = data.get_data()[(self.phonemeIdx - 1)::self.nPhons]
             labels = data.events[(self.phonemeIdx - 1)::self.nPhons, 2]
 
+        self.ch_names = list(data.ch_names)
+        self.sfreq = float(data.info['sfreq'])
         self.label_dict = {v: k for k, v in data.event_id.items()}
         return features, labels

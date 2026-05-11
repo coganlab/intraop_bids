@@ -2,9 +2,9 @@ name: production
 
 align_to: response
 
-full_times: [-1.5, 2.0]
+full_times: [-3.0, 3.0]
 
-feat_times: [-1.0, 1.5]
+feat_times: [-2.5, 2.5]
 
 # sig_times: [-0.5, 0.5]
 sig_times: [-0.25, 0.25]
