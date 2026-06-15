@@ -1,7 +1,7 @@
 #!/bin/bash
 
-# subj_arr=("S82")
-subj_arr=("S30" "S41" "S45" "S47" "S51" "S52" "S53" "S55" "S56" "S63" "S67" "S73" "S74" "S75" "S76" "S78" "S81" "S82" "S83")
+subj_arr=("S83")
+# subj_arr=("S30" "S41" "S45" "S47" "S51" "S52" "S53" "S55" "S56" "S63" "S67" "S73" "S74" "S75" "S76" "S78" "S81" "S82" "S83")
 
 bids_root_parent="~/cworkspace/BIDS_1.0_Lexical_µECoG/BIDS/derivatives"
 phonemeIdx=(-1 1 2 3 4 5)
@@ -13,18 +13,21 @@ chance=false
 twMin=-0.5
 twMax=0.5
 
-task_periods=("perception" "production")
+# task_periods=("perception" "production")
+task_periods=("production")
 norm_type="MeanSub"
-suffix="spikeBand"
+suffix="highGamma"
 extension=".fif"
 task="lexical"
-datatype="epoch(band)(power)(sig)"
+# datatype="epoch(band)(power)(sig)"
+datatype="epoch(band)(power)"
 reference="CAR"
 
 # Contact sizes (must match what spatial_avg_raw.py + extract_ieeg_epochs.py
 # produced).  Each value loads epochs from
 # .../derivatives/epoch(spatialAvgContact{N})(CAR)/
-contact_sizes=(2 4 8)
+contact_sizes=(2 3 4 5 6 7 8 9 10 11 12 13 14 15 16)
+# contact_sizes=(2)
 
 
 for subject in "${subj_arr[@]}"; do

@@ -1,9 +1,10 @@
 #!/bin/bash
 #SBATCH --output=/hpc/home/zms14/cworkspace/jobs/decode_phonemeLevel/%j.out
 #SBATCH -e /hpc/home/zms14/cworkspace/jobs/decode_phonemeLevel/%j.error
-#SBATCH -p common,scavenger
+#SBATCH -p common,scavenger,coganlab-gpu
+#SBATCH --time=01:00:00
 #SBATCH -c 20
-#SBATCH --mem=40G
+#SBATCH --mem=128G
 
 # ----------------------------
 # Load environment

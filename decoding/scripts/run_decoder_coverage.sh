@@ -31,8 +31,9 @@ DATATYPE="epoch(band)(power)"
 CHANCE=false
 WIN_ROWS=4
 WIN_COLS=4
+COMPACT="false"
 
-while getopts s:b:l:t:p:n:f:i:w:x:d:u:e:a:c:R:C: flag
+while getopts s:b:l:t:p:n:f:i:w:x:d:u:e:a:c:R:C:K: flag
 do
     case "${flag}" in
         s) SUBJECT=${OPTARG};;
@@ -52,6 +53,7 @@ do
         c) CHANCE=${OPTARG};;
         R) WIN_ROWS=${OPTARG};;
         C) WIN_COLS=${OPTARG};;
+        K) COMPACT=${OPTARG};;
     esac
 done
 
@@ -82,4 +84,5 @@ python decode_bids_phonemes_coverage.py \
     "datatype='${DATATYPE}'" \
     compute_chance=${CHANCE} \
     "win_size=[${WIN_ROWS},${WIN_COLS}]" \
+    compact_chanmap=${COMPACT} \
     hydra.run.dir=/hpc/home/zms14/cworkspace/outputs/${SLURM_JOB_NAME}_${SLURM_JOB_ID}

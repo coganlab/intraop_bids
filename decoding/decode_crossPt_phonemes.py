@@ -17,7 +17,7 @@ from mne_bids import BIDSPath
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from utils.dataset import PhonemeDatasetBIDS
+from utils.dataset import PhonemeDatasetBIDS, format_band_str
 from utils.decoders import DimRedReshape, NaNImputer3D, decodeResultsBIDS
 from utils.alignment import AlignCCA
 from utils.crossPt_decoders import (crossPtDecoder_sepDimRed,
@@ -210,12 +210,14 @@ def build_output_path(cfg, tw_epoch, decode_tw, other_subjects, results_root):
     phoneme_suffix = ('pAll' if cfg.phoneme_idx == -1
                       else f'p{cfg.phoneme_idx}')
 
+    band = format_band_str(cfg.suffix)
+
     outpath = BIDSPath(
         root=results_root,
         subject=cfg.patient,
         task=cfg.task,
         datatype='decode(production)(cca)(crossPatientTask)',
-        description=(f"{cfg.suffix}({phase})({norm_type})"
+        description=(f"{band}({phase})({norm_type})"
                      f"(alignTW{tw_str(tw_epoch)})"
                      f"(decTW{tw_str(decode_tw)})"
                      f"({sig_str}Channel)"

@@ -8,6 +8,11 @@ phoneme_idx: -1
 n_phons: 5
 
 description: productionMeanSub
+# Band suffix. Single string or list to combine bands (concatenated along
+# the channel axis; per-subgrid picks are replicated across bands).
+# Examples:
+#   suffix: highGamma
+#   suffix: [highGamma, spikeBand]
 suffix: highgamma
 extension: .fif
 datatype: "epoch(band)(power)"
@@ -18,6 +23,12 @@ compute_chance: false
 # Coverage subsampling parameters
 win_size: [4, 4]            # (rows, cols)
 extra_iters_per_subgrid: 1  # >1 averages over multiple CV resamples per subgrid
+
+# Drop fully-NaN rows / columns from the chanmap before enumerating
+# valid window placements.  Useful for multi-array recordings (e.g.
+# S83) where a NaN gap row between two arrays would otherwise block
+# larger windows from fitting.
+compact_chanmap: false
 
 time_window: null
 

@@ -30,7 +30,7 @@ from tqdm import tqdm
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from utils.dataset import PhonemeDatasetBIDS  # noqa: E402
+from utils.dataset import PhonemeDatasetBIDS, format_band_str  # noqa: E402
 from utils.decoders import (DimRedReshape, NaNImputer3D,  # noqa: E402
                             decodeResultsBIDS)
 from preprocessing.utils.dataloaders import (load_chanmap,  # noqa: E402
@@ -51,7 +51,7 @@ def build_output_path(cfg, tw_epoch, results_root, win_size):
     description = cfg.description
     phase = ('Perception' if 'perception' in description.lower()
              else 'Production')
-    band = cfg.suffix
+    band = format_band_str(cfg.suffix)
 
     if 'zscore' in description.lower():
         norm_type = 'Zscore'
@@ -143,15 +143,24 @@ def main(cfg: DictConfig) -> None:
     logger.info(f'Channel map shape: {chanmap.shape}; '
                 f'full channels: {len(full_ch_names)}')
 
+    compact = bool(cfg.get('compact_chanmap', False))
+    if compact:
+        from subsampling.chanmap_utils import compact_chanmap
+        compacted = compact_chanmap(chanmap)
+        logger.info(f'compact_chanmap=true -> compacted shape '
+                    f'{chanmap.shape} -> {compacted.shape}')
+
     win_size = (int(cfg.win_size[0]), int(cfg.win_size[1]))
-    subgrids = coverage_subgrids(chanmap, win_size)
+    subgrids = coverage_subgrids(chanmap, win_size, compact=compact)
     if not subgrids:
         raise ValueError(
             f'No valid {win_size} subgrids in chanmap of shape '
             f'{chanmap.shape}.')
     logger.info(f'Found {len(subgrids)} valid {win_size} subgrid placements')
 
-    epoch_ch_names = list(dataset.ch_names)
+    epoch_ch_names = list(dataset.ch_names_per_band)
+    n_ch_per_band = dataset.n_ch_per_band
+    n_bands = dataset.n_bands
     valid_subgrids = []
     for ch_idxs in subgrids:
         picks = chanmap_idxs_to_epoch_picks(ch_idxs, full_ch_names,
@@ -160,6 +169,9 @@ def main(cfg: DictConfig) -> None:
             valid_subgrids.append(picks)
     logger.info(f'{len(valid_subgrids)}/{len(subgrids)} subgrids overlap '
                 f'with loaded epoch channels')
+    if n_bands > 1:
+        logger.info(f'Combining {n_bands} bands ({dataset.suffixes}); '
+                    f'expanding per-subgrid picks across bands.')
 
     if not valid_subgrids:
         raise ValueError('No subgrid overlaps with loaded epoch channels; '
@@ -183,8 +195,13 @@ def main(cfg: DictConfig) -> None:
     it = 0
     for sg_idx, picks in enumerate(
             tqdm(valid_subgrids, desc='Coverage subgrids')):
+        if n_bands > 1:
+            picks_full = np.concatenate(
+                [picks + b * n_ch_per_band for b in range(n_bands)])
+        else:
+            picks_full = picks
         for _ in range(extra):
-            X_sub = X[:, picks, :]
+            X_sub = X[:, picks_full, :]
             cv = _make_cv(X_sub, y, cfg.n_folds)
             score, y_pred = _decode_iter(model, X_sub, y, cv,
                                          compute_chance=cfg.compute_chance)
@@ -194,6 +211,7 @@ def main(cfg: DictConfig) -> None:
             subgrid_idx_per_iter[it] = sg_idx
             logger.info(f'Subgrid {sg_idx+1}/{len(valid_subgrids)} '
                         f'(iter {it+1}/{n_iter}): picks={picks.size} '
+                        f'(x{n_bands} bands={picks_full.size}) '
                         f'bal_acc={score:.4f}')
             it += 1
 

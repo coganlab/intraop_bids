@@ -30,7 +30,7 @@ from tqdm import tqdm
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from utils.dataset import PhonemeDatasetBIDS  # noqa: E402
+from utils.dataset import PhonemeDatasetBIDS, format_band_str  # noqa: E402
 from utils.decoders import (DimRedReshape, NaNImputer3D,  # noqa: E402
                             decodeResultsBIDS)
 
@@ -47,7 +47,7 @@ def build_output_path(cfg, tw_epoch, results_root):
     description = cfg.description
     phase = ('Perception' if 'perception' in description.lower()
              else 'Production')
-    band = cfg.suffix
+    band = format_band_str(cfg.suffix)
 
     if 'zscore' in description.lower():
         norm_type = 'Zscore'

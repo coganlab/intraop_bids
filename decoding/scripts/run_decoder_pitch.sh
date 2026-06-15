@@ -2,6 +2,7 @@
 #SBATCH --output=/hpc/home/zms14/cworkspace/jobs/decode_pitchSubsample/%j.out
 #SBATCH -e /hpc/home/zms14/cworkspace/jobs/decode_pitchSubsample/%j.error
 #SBATCH -p common,scavenger
+#SBATCH --time=01:00:00
 #SBATCH -c 20
 #SBATCH --mem=40G
 
@@ -31,8 +32,9 @@ DATATYPE="epoch(band)(power)"
 CHANCE=false
 PITCH_MM=0.4
 SEED=""
+COMPACT="false"
 
-while getopts s:b:l:t:p:n:f:i:w:x:d:u:e:a:c:P:r: flag
+while getopts s:b:l:t:p:n:f:i:w:x:d:u:e:a:c:P:r:C: flag
 do
     case "${flag}" in
         s) SUBJECT=${OPTARG};;
@@ -52,6 +54,7 @@ do
         c) CHANCE=${OPTARG};;
         P) PITCH_MM=${OPTARG};;
         r) SEED=${OPTARG};;
+        C) COMPACT=${OPTARG};;
     esac
 done
 
@@ -87,5 +90,6 @@ python decode_bids_phonemes_pitch.py \
     "datatype='${DATATYPE}'" \
     compute_chance=${CHANCE} \
     pitch_mm=${PITCH_MM} \
+    compact_chanmap=${COMPACT} \
     ${SEED_ARG} \
     hydra.run.dir=/hpc/home/zms14/cworkspace/outputs/${SLURM_JOB_NAME}_${SLURM_JOB_ID}

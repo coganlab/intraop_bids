@@ -22,6 +22,46 @@ import numpy as np
 import yaml
 
 
+def compact_chanmap(chanmap: np.ndarray) -> np.ndarray:
+    """Drop rows / columns that are entirely NaN from ``chanmap``.
+
+    For subjects whose recording has multiple electrode arrays placed
+    concurrently, ``load_chanmap`` often returns a grid with one or
+    more rows / columns of all-NaN cells representing the physical
+    gap between arrays.  These gaps prevent larger ``win_size`` /
+    ``contact_size`` placements from fitting cleanly across the
+    arrays.
+
+    This helper compacts away the gap rows / columns *without*
+    touching the channel indices themselves, so:
+
+    * Interior NaNs that encode non-rectangular array shapes are
+      preserved (they don't get dropped because their row / column
+      still contains real channels).
+    * The cell values (channel indices into the original
+      ``channels.tsv`` order) are unchanged, so downstream helpers
+      like ``grid_idx_to_channels`` and ``chanmap_idxs_to_epoch_picks``
+      still work without modification.
+    * Only the spatial shape changes: e.g. S83's ``(17, 34)`` grid
+      with a single all-NaN row in the middle becomes ``(16, 34)``.
+
+    Returns a copy; the original chanmap is untouched.
+    """
+    if chanmap.ndim != 2:
+        raise ValueError(f"Expected 2D chanmap; got shape {chanmap.shape}")
+    valid_rows = ~np.all(np.isnan(chanmap), axis=1)
+    valid_cols = ~np.all(np.isnan(chanmap), axis=0)
+    return chanmap[np.ix_(valid_rows, valid_cols)].copy()
+
+
+def maybe_compact_chanmap(chanmap: np.ndarray,
+                          compact: bool = False) -> np.ndarray:
+    """Pass-through wrapper that compacts only if ``compact`` is True."""
+    if compact:
+        return compact_chanmap(chanmap)
+    return chanmap
+
+
 def clean_chanmap(chanmap: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
     """Return a copy of ``chanmap`` with macro-electrode duplicates marked.
 

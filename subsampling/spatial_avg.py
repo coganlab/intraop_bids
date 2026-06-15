@@ -50,7 +50,8 @@ def spatial_avg_idxs(grid_shape: Tuple[int, int],
 def average_group_indices(
         chanmap: np.ndarray,
         contact_size: int,
-        min_valid_frac: float = 0.5
+        min_valid_frac: float = 0.5,
+        compact: bool = False,
         ) -> Tuple[List[np.ndarray], List[Tuple[int, int]],
                    List[Tuple[int, int]]]:
     """Return one channel-index group per averaged contact.
@@ -64,6 +65,11 @@ def average_group_indices(
     min_valid_frac : float
         Skip windows where at least ``(1 - min_valid_frac)`` of the cells
         are NaN.  Defaults to 0.5 (same threshold as the reference).
+    compact : bool
+        If True, drop fully-NaN rows / columns of the chanmap before
+        tiling.  Useful for multi-array recordings (e.g. S83) where
+        a row of NaNs sits between two physical arrays and would
+        otherwise prevent larger contacts from spanning the gap.
 
     Returns
     -------
@@ -76,9 +82,11 @@ def average_group_indices(
         ``R{r}-C{c}`` in the derivative channels.tsv).
     centroids : list of (int, int)
         ``(row, col)`` centroid of each averaging window on the
-        *original* grid (saved for documentation in the derivative
-        channel-map tsv).
+        (possibly compacted) chanmap (saved for documentation in
+        the derivative channel-map tsv).
     """
+    chanmap = chanmap_utils.maybe_compact_chanmap(chanmap, compact=compact)
+
     groups: List[np.ndarray] = []
     reduced_rc: List[Tuple[int, int]] = []
     centroids: List[Tuple[int, int]] = []

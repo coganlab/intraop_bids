@@ -31,7 +31,7 @@ from tqdm import tqdm
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from utils.dataset import PhonemeDatasetBIDS  # noqa: E402
+from utils.dataset import PhonemeDatasetBIDS, format_band_str  # noqa: E402
 from utils.decoders import (DimRedReshape, NaNImputer3D,  # noqa: E402
                             decodeResultsBIDS)
 from preprocessing.utils.dataloaders import (load_chanmap,  # noqa: E402
@@ -55,7 +55,7 @@ def build_output_path(cfg, tw_epoch, results_root):
     description = cfg.description
     phase = ('Perception' if 'perception' in description.lower()
              else 'Production')
-    band = cfg.suffix
+    band = format_band_str(cfg.suffix)
 
     if 'zscore' in description.lower():
         norm_type = 'Zscore'
@@ -150,6 +150,13 @@ def main(cfg: DictConfig) -> None:
     logger.info(f'Channel map shape: {chanmap.shape}; '
                 f'full channels: {len(full_ch_names)}')
 
+    compact = bool(cfg.get('compact_chanmap', False))
+    if compact:
+        from subsampling.chanmap_utils import compact_chanmap
+        compacted = compact_chanmap(chanmap)
+        logger.info(f'compact_chanmap=true -> compacted shape '
+                    f'{chanmap.shape} -> {compacted.shape}')
+
     array_type, base_pitch_mm = resolve_pitch_for_subject(cfg.patient)
     target_pitch_mm = float(cfg.pitch_mm)
     logger.info(f'Subject {cfg.patient}: array_type={array_type}, '
@@ -169,10 +176,16 @@ def main(cfg: DictConfig) -> None:
     y_preds = np.zeros((n_iter, len(y)))
     n_picked_per_iter = np.zeros(n_iter, dtype=int)
 
-    epoch_ch_names = list(dataset.ch_names)
+    epoch_ch_names = list(dataset.ch_names_per_band)
+    n_ch_per_band = dataset.n_ch_per_band
+    n_bands = dataset.n_bands
+    if n_bands > 1:
+        logger.info(f'Combining {n_bands} bands ({dataset.suffixes}); '
+                    f'expanding per-iteration picks across bands.')
     for j in tqdm(range(n_iter), desc='Pitch subsample iters'):
         ch_idxs = pitch_subsample_channels(
-            chanmap, base_pitch_mm, target_pitch_mm, rng=rng)
+            chanmap, base_pitch_mm, target_pitch_mm, rng=rng,
+            compact=compact)
         picks = chanmap_idxs_to_epoch_picks(ch_idxs, full_ch_names,
                                             epoch_ch_names)
         if picks.size == 0:
@@ -181,7 +194,12 @@ def main(cfg: DictConfig) -> None:
                            'skipping iter.')
             scores[j] = np.nan
             continue
-        X_sub = X[:, picks, :]
+        if n_bands > 1:
+            picks_full = np.concatenate(
+                [picks + b * n_ch_per_band for b in range(n_bands)])
+        else:
+            picks_full = picks
+        X_sub = X[:, picks_full, :]
         n_picked_per_iter[j] = picks.size
 
         cv = _make_cv(X_sub, y, cfg.n_folds)
@@ -190,6 +208,7 @@ def main(cfg: DictConfig) -> None:
         scores[j] = score
         y_preds[j] = y_pred
         logger.info(f'Iter {j+1}/{n_iter}: picks={picks.size} '
+                    f'(x{n_bands} bands={picks_full.size}) '
                     f'bal_acc={score:.4f}')
 
     logger.info(f'Mean bal_acc over {n_iter} iters: '

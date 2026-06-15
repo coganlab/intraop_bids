@@ -10,33 +10,25 @@
 # be confirmed before running real analyses.
 
 128-strip:
-  pitch_mm: 0.2
-  grid_dims: [1, 128]  # placeholder; verify per-strip layout
+  pitch_mm: 1.33
+  grid_dims: [8, 16]  # placeholder; verify per-strip layout
 
 256-grid:
-  pitch_mm: 0.4
-  grid_dims: [8, 32]
+  pitch_mm: 1.72
+  grid_dims: [12, 22]
 
 256-strip:
-  pitch_mm: 0.4
-  grid_dims: [8, 32]
-
-256-strip-old:
-  pitch_mm: 0.4
+  pitch_mm: 1.56
   grid_dims: [8, 32]
 
 512-grid-old:
-  pitch_mm: 0.2
-  grid_dims: [16, 32]
+  pitch_mm: 1.72
+  grid_dims: [24, 22]
 
 1024-grid-S82:
-  pitch_mm: 0.2
-  grid_dims: [32, 32]
+  pitch_mm: 1.00
+  grid_dims: [46, 24]
 
 hybrid-strip:
-  pitch_mm: 0.2
-  grid_dims: [2, 64]   # placeholder; hybrid layouts vary
-
-hybrid-strip-old:
-  pitch_mm: 0.2
-  grid_dims: [2, 64]   # placeholder; hybrid layouts vary
+  pitch_mm: 1.00
+  grid_dims: [8, 34]   # placeholder; hybrid layouts vary

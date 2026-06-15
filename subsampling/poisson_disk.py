@@ -173,7 +173,8 @@ def pitch_subsample_channels(
         chanmap: np.ndarray,
         base_pitch_mm: float,
         target_pitch_mm: float,
-        rng: Optional[np.random.Generator] = None) -> np.ndarray:
+        rng: Optional[np.random.Generator] = None,
+        compact: bool = False) -> np.ndarray:
     """Return channel indices sampled at the target pitch.
 
     Implementation notes
@@ -187,9 +188,15 @@ def pitch_subsample_channels(
       are rounded to grid cells and mapped to channel indices via the
       chanmap.  NaN cells and macro replicates are handled (each macro
       contact contributes at most once).
+    * When ``compact=True``, rows / columns that are entirely NaN are
+      dropped before sampling so the grid spans only the physically
+      populated area (useful for multi-array recordings with a NaN
+      gap row between arrays).
     """
     if rng is None:
         rng = np.random.default_rng()
+
+    chanmap = chanmap_utils.maybe_compact_chanmap(chanmap, compact=compact)
 
     grid_shape = tuple(chanmap.shape)
     n_full = chanmap_utils.unique_channel_count(chanmap)
@@ -227,11 +234,12 @@ def pitch_subsample_picks(
         chanmap: np.ndarray,
         base_pitch_mm: float,
         target_pitch_mm: float,
-        rng: Optional[np.random.Generator] = None) -> np.ndarray:
+        rng: Optional[np.random.Generator] = None,
+        compact: bool = False) -> np.ndarray:
     """Wrapper around ``pitch_subsample_channels`` that validates picks
     against an ``epochs.ch_names`` list."""
     ch_idx = pitch_subsample_channels(
-        chanmap, base_pitch_mm, target_pitch_mm, rng=rng)
+        chanmap, base_pitch_mm, target_pitch_mm, rng=rng, compact=compact)
     return chanmap_utils.channels_to_picks(ch_names_all, ch_idx)
 
 

@@ -8,6 +8,10 @@ phoneme_idx: -1
 n_phons: 5
 
 description: productionMeanSub
+# Band suffix. Single string or list to combine bands (concatenated along
+# the channel axis). Examples:
+#   suffix: highGamma
+#   suffix: [highGamma, spikeBand]
 suffix: highgamma
 extension: .fif
 datatype: "epoch(band)(power)"

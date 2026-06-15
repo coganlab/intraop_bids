@@ -11,7 +11,7 @@ from mne_bids import BIDSPath
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from utils.dataset import PhonemeDatasetBIDS
+from utils.dataset import PhonemeDatasetBIDS, format_band_str
 from utils.decoders import DimRedReshape, NaNImputer3D, decodeResultsBIDS
 
 logging.basicConfig(
@@ -28,7 +28,7 @@ def build_output_path(cfg, twEpoch, results_root):
     description = cfg.description
     phase = ('Perception' if 'perception' in description.lower()
              else 'Production')
-    band = cfg.suffix
+    band = format_band_str(cfg.suffix)
 
     if 'zscore' in description.lower():
         norm_type = 'Zscore'

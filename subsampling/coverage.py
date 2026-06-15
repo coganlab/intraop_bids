@@ -63,8 +63,16 @@ def grid_subsample_idxs(
 
 
 def coverage_subgrids(chanmap: np.ndarray,
-                      win_size: Sequence[int]) -> List[np.ndarray]:
-    """List of channel-index arrays, one per valid subgrid placement."""
+                      win_size: Sequence[int],
+                      compact: bool = False) -> List[np.ndarray]:
+    """List of channel-index arrays, one per valid subgrid placement.
+
+    When ``compact=True``, fully-NaN rows and columns of the chanmap
+    (e.g. the physical gap between two arrays placed concurrently)
+    are dropped before enumerating subgrids, so windows can span the
+    gap without being blocked by it.
+    """
+    chanmap = chanmap_utils.maybe_compact_chanmap(chanmap, compact=compact)
     win = (int(win_size[0]), int(win_size[1]))
     grid_idxs = grid_subsample_idxs(chanmap.shape, win)
     out = []
@@ -78,11 +86,13 @@ def coverage_subgrids(chanmap: np.ndarray,
 def coverage_subsample_picks(
         ch_names_all: Sequence[str],
         chanmap: np.ndarray,
-        win_size: Sequence[int]) -> List[np.ndarray]:
+        win_size: Sequence[int],
+        compact: bool = False) -> List[np.ndarray]:
     """Same as ``coverage_subgrids`` but validates picks against
     ``epochs.ch_names``."""
     return [chanmap_utils.channels_to_picks(ch_names_all, ch_idx)
-            for ch_idx in coverage_subgrids(chanmap, win_size)]
+            for ch_idx in coverage_subgrids(chanmap, win_size,
+                                            compact=compact)]
 
 
 if __name__ == '__main__':
