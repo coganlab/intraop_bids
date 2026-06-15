@@ -1,11 +1,14 @@
-bids_root: ???
+# bids_root: ???
 # bids_root: ~/cworkspace/BIDS_1.0_Lexical_µECoG/BIDS
+bids_root: ~/cworkspace/BIDS_1.0_Phoneme_Sequence_uECoG/BIDS
 
-patient: ???
+# patient: ???
 # patient: S41
+patient: S14
 
-task: ???
+# task: ???
 # task: lexical
+task: phoneme
 
 load_kwargs:
   # passed to raw_from_layout
@@ -13,7 +16,8 @@ load_kwargs:
 
 reference: CAR
 
-sig_channels: true
+# sig_channels: true
+sig_channels: false
 
 # Per-channel trial QC (bad trial-channel pairs are NaN-masked, not dropped)
 trial_selection:
@@ -25,7 +29,7 @@ trial_selection:
 
 
 task_periods:
-  - perception
+  # - perception
   - production
 
 features:
@@ -34,7 +38,8 @@ features:
 
 # Phoneme-level processing (set to true to swap to phonemeLevel raw
 # for feature extraction; QC still runs on the main raw)
-phoneme_level: false
+# phoneme_level: false
+phoneme_level: true
 derivative_name: phonemeLevel
 
 # Spatial-average mode: when enabled, the raw input is loaded from the

@@ -18,14 +18,16 @@ SUBJECT=""
 TASK="lexical"
 BIDS_ROOT="/hpc/home/zms14/cworkspace/BIDS_1.0_Lexical_µECoG/BIDS"
 CONTACT_SIZES="[2,4,8]"
+COMPACT="false"
 
-while getopts s:b:t:z: flag
+while getopts s:b:t:z:c: flag
 do
     case "${flag}" in
         s) SUBJECT=${OPTARG};;
         b) BIDS_ROOT=${OPTARG};;
         t) TASK=${OPTARG};;
         z) CONTACT_SIZES=${OPTARG};;
+        c) COMPACT=${OPTARG};;
     esac
 done
 
@@ -38,10 +40,11 @@ fi
 # Run script with Hydra config
 # ----------------------------
 cd ..
-echo "Generating spatial-average raw derivatives for subject ${SUBJECT} (contact_sizes=${CONTACT_SIZES})"
+echo "Generating spatial-average raw derivatives for subject ${SUBJECT} (contact_sizes=${CONTACT_SIZES}, compact_chanmap=${COMPACT})"
 python spatial_avg_raw.py \
     patient=${SUBJECT} \
     "bids_root='${BIDS_ROOT}'" \
     task=${TASK} \
     "contact_sizes=${CONTACT_SIZES}" \
+    compact_chanmap=${COMPACT} \
     hydra.run.dir=/hpc/home/zms14/cworkspace/outputs/${SLURM_JOB_NAME}_${SLURM_JOB_ID}

@@ -143,14 +143,17 @@ def write_spatial_avg_derivative(raw: mne.io.BaseRaw,
                                  subject: str,
                                  task: str,
                                  contact_size: int,
-                                 overwrite: bool = True):
+                                 overwrite: bool = True,
+                                 compact: bool = False):
     """Generate and write one spatial-average derivative for ``contact_size``.
 
     Returns the ``BIDSPath`` of the written iEEG file.
     """
-    logger.info(f'Computing averaging groups for contact_size={contact_size}')
+    logger.info(f'Computing averaging groups for contact_size={contact_size}'
+                f' (compact_chanmap={compact})')
     groups, reduced_rc, centroids = average_group_indices(chanmap,
-                                                          contact_size)
+                                                          contact_size,
+                                                          compact=compact)
     if len(groups) == 0:
         logger.warning(f'No valid averaging groups for contact_size='
                        f'{contact_size}; skipping.')
@@ -219,12 +222,18 @@ def main(cfg: DictConfig) -> None:
 
     contact_sizes = list(OmegaConf.to_container(cfg.contact_sizes))
     overwrite = bool(cfg.overwrite)
+    compact = bool(cfg.get('compact_chanmap', False))
+    if compact:
+        from subsampling.chanmap_utils import compact_chanmap as _compact
+        logger.info(f'compact_chanmap=true -> compacted shape '
+                    f'{chanmap.shape} -> {_compact(chanmap).shape}')
 
     for contact_size in contact_sizes:
         write_spatial_avg_derivative(
             raw=raw, chanmap=chanmap, bids_root=bids_root,
             subject=cfg.patient, task=cfg.task,
             contact_size=int(contact_size), overwrite=overwrite,
+            compact=compact,
         )
 
 

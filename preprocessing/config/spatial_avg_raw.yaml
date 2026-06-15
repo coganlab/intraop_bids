@@ -11,3 +11,9 @@ load_kwargs:
 contact_sizes: [2, 4, 8]
 
 overwrite: true
+
+# Drop fully-NaN rows / columns from the chanmap before averaging.
+# Useful for multi-array recordings (e.g. S83) where a NaN gap row
+# between two arrays would otherwise prevent larger contacts from
+# tiling cleanly across the gap.
+compact_chanmap: false
