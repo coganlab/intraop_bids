@@ -17,8 +17,7 @@ from utils import snake2camel
 from utils.config import normalize_cfg_items
 from utils.preprocessing import (get_events, get_bad_trial_mask,
                                  preprocess_raw,
-                                 preprocess_raw_data,
-                                 preprocess_derivative_raw)
+                                 preprocess_raw_data)
 from utils.dataloaders import load_derivative_raw
 from utils.phoneme import remap_phoneme_events
 from utils.stats import get_significant_channels
@@ -179,15 +178,22 @@ def main(cfg: DictConfig) -> None:
     good_mask_feat = good_mask
     nPhons = 1
     if cfg.phoneme_level:
-        logger.info('##### Phoneme-level mode: loading derivative raw #####')
+        logger.info('##### Phoneme-level mode: borrowing derivative events '
+                    '#####')
+        # Load the phoneme-level derivative only to extract its annotations,
+        # then transplant them onto the already-preprocessed raw. This keeps
+        # the current channel structure (which may be spatial-averaged) and
+        # avoids the channel mismatch that would arise from swapping in the
+        # phoneme-level raw, whose channels track the original recording.
         raw_phon = load_derivative_raw(
             bids_layout, cfg.patient, cfg.derivative_name,
             **OmegaConf.to_container(cfg.load_kwargs))
-        raw_phon = preprocess_derivative_raw(raw_phon, raw, cfg.reference)
+        raw.set_annotations(raw_phon.annotations)
+        del raw_phon
 
-        phon_resp_events, _ = get_events(raw_phon, 'response')
+        phon_resp_events, _ = get_events(raw, 'response')
         phon_epochs_count = trial_ieeg(
-            raw_phon, event=phon_resp_events, times=[0, 0.1], preload=True)
+            raw, event=phon_resp_events, times=[0, 0.1], preload=True)
         nPhons = len(phon_epochs_count) // n_trials_total
         logger.info(f'Phonemes per trial: {nPhons}')
 
@@ -195,7 +201,6 @@ def main(cfg: DictConfig) -> None:
         logger.info(f'Expanded good trial mask: {good_mask.shape[1]} trials '
                     f'-> {good_mask_feat.shape[1]} phoneme observations')
 
-        raw = raw_phon
         stim_events, _ = get_events(raw, 'stimulus')
         resp_events, _ = get_events(raw, 'response')
 

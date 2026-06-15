@@ -7,6 +7,11 @@ pool_task: all     # phoneme | lexical | all
 
 # BIDS file matching
 description: productionMeanSub
+# Band suffix. Single string or list to combine bands (concatenated along
+# the channel axis). All cross-patient subjects must have the same band
+# set on disk. Examples:
+#   suffix: highGamma
+#   suffix: [highGamma, spikeBand]
 suffix: highgamma
 extension: .fif
 datatype: "epoch(band)(power)"

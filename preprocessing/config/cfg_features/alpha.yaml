@@ -1,0 +1,16 @@
+name: alpha
+
+extractor:
+  # _target_: preprocessing.utils.feature_extraction.extract_band
+  _target_: utils.feature_extraction.extract_band
+
+  frange: [8, 13]
+  power: abs
+  smooth_ms: 50
+
+  method: iir
+  iir_params:
+    order: 4
+    ftype: butter
+
+out_fs: 200

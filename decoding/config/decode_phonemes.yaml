@@ -1,15 +1,26 @@
 bids_root: ???
+# bids_root: "~/cworkspace/BIDS_1.0_Phoneme_Sequence_uECoG/BIDS/derivatives/epoch(phonemeLevel)(CAR)"
+
 patient: ???
+# patient: "S33"
+
 task: ???
+# task: "phoneme"
 
 phoneme_idx: -1    # -1 for all phonemes, 1..N for specific position
 n_phons: 5
+# n_phons: 3
 
 # BIDS file matching
 description: productionMeanSub
-suffix: highgamma
+# Band suffix. Single string or list to combine bands (concatenated along
+# the channel axis). Examples:
+#   suffix: highGamma
+#   suffix: [highGamma, spikeBand]
+suffix: highGamma
 extension: .fif
-datatype: "epoch(band)(power)"
+# datatype: "epoch(band)(power)"
+datatype: "epoch(band)(power)(sig)"
 
 # Decoding parameters
 n_folds: 20
@@ -17,7 +28,8 @@ n_iter: 50
 compute_chance: false
 
 # Time window (null = full epoch, or [tmin, tmax] e.g. [-0.5, 0.5])
-time_window: null
+# time_window: null
+time_window: [-0.5, 0.5]
 
 # Model hyperparameters
 pca_variance: 0.8

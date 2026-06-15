@@ -1,0 +1,34 @@
+# Electrode array metadata used by the subsampling package.
+#
+# `pitch_mm` is the center-to-center spacing between physical contacts
+# on the array (used to scale electrode count for pitch subsampling).
+# `grid_dims` is informational only -- the actual chanmap shape is
+# derived per-subject from channels.tsv via `load_chanmap`.
+#
+# TODO(user): verify these values against array documentation.  The
+# defaults below are based on typical Duke uECoG geometries but should
+# be confirmed before running real analyses.
+
+128-strip:
+  pitch_mm: 1.33
+  grid_dims: [8, 16]  # placeholder; verify per-strip layout
+
+256-grid:
+  pitch_mm: 1.72
+  grid_dims: [12, 22]
+
+256-strip:
+  pitch_mm: 1.56
+  grid_dims: [8, 32]
+
+512-grid-old:
+  pitch_mm: 1.72
+  grid_dims: [24, 22]
+
+1024-grid-S82:
+  pitch_mm: 1.00
+  grid_dims: [46, 24]
+
+hybrid-strip:
+  pitch_mm: 1.00
+  grid_dims: [8, 34]   # placeholder; hybrid layouts vary
