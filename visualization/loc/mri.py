@@ -10,7 +10,7 @@ import numpy as np
 import pandas as pd
 from scipy.ndimage import label as ndimage_label
 from scipy.spatial import KDTree
-import subprocess
+import trimesh
 import mne
 from mne._freesurfer import _read_mri_info, read_ras_mni_t
 from mne.transforms import combine_transforms
@@ -342,43 +342,6 @@ def _rigid_fit_plates(source: np.ndarray, targets: np.ndarray,
     return result
 
 
-def _pial_outward_normals(pial_verts: np.ndarray,
-                          faces: np.ndarray) -> np.ndarray:
-    """Unit outward vertex normals averaged from adjacent face normals."""
-    v0 = pial_verts[faces[:, 0]]
-    v1 = pial_verts[faces[:, 1]]
-    v2 = pial_verts[faces[:, 2]]
-    face_normals = np.cross(v1 - v0, v2 - v0)
-    vert_normals = np.zeros_like(pial_verts)
-    for i in range(3):
-        np.add.at(vert_normals, faces[:, i], face_normals)
-
-    norms = np.linalg.norm(vert_normals, axis=1, keepdims=True)
-    zero = norms[:, 0] == 0
-    norms[zero] = 1.0
-    vert_normals = vert_normals / norms
-    vert_normals[zero] = 0.0
-    return vert_normals
-
-
-def _apply_normal_offset(pos: np.ndarray, vert_idx: np.ndarray,
-                         pial_verts: np.ndarray,
-                         smoothed_verts: np.ndarray,
-                         normals: np.ndarray,
-                         offset_mm: float | None = None,
-                         min_offset_mm: float = 0.5) -> np.ndarray:
-    """Push positions outward along pial vertex normals for pial visibility."""
-    pial_at_idx = pial_verts[vert_idx]
-    smoothed_at_idx = smoothed_verts[vert_idx]
-    normal_at_idx = normals[vert_idx]
-    if offset_mm is None:
-        gap = np.linalg.norm(pial_at_idx - smoothed_at_idx, axis=1)
-        offset = np.maximum(gap, min_offset_mm)
-    else:
-        offset = np.full(len(pos), offset_mm)
-    return pos + normal_at_idx * offset[:, np.newaxis]
-
-
 def _sph_map_hemi(elec_pos_hemi: np.ndarray, hemi: str,
                   subj_surf_dir: Path, avg_surf_dir: Path,
                   reg_fname_subj: str, reg_fname: str,
@@ -480,13 +443,6 @@ def _calc_avg_sph(elec_pos: ArrayLike, subj: str, avg_subj: str,
                 plate_ids = _plate_ids_by_index(
                     chanmap, chan_coords, len(elec_pos))
 
-    pial_cache: dict[str, tuple[np.ndarray, np.ndarray]] = {}
-    if visibility == 'normal_offset':
-        for hemi in ('lh', 'rh'):
-            pial_verts, faces = mne.read_surface(avg_dir / f'{hemi}.pial')
-            pial_cache[hemi] = (pial_verts, _pial_outward_normals(pial_verts,
-                                                                  faces))
-
     avg_proj_verts = []
     for hemi in ('lh', 'rh'):
         if hemi == 'lh':
@@ -503,26 +459,101 @@ def _calc_avg_sph(elec_pos: ArrayLike, subj: str, avg_subj: str,
             reg_fname_subj, reg_fname, use_outer)
 
         pos_hemi = targets.copy()
+        # apply offset along pial normals for pial visibility
+        # (not necessary if already using pial surface for registration)
+        if visibility == 'normal_offset' and use_outer:
+            # build smoothed and pial meshes objects via Trimesh
+            smooth_fname = f'{hemi}.pial-outer-smoothed'
+            smooth_mesh = _build_trimesh_from_surface(avg_dir / smooth_fname)
+            pial_mesh = _build_trimesh_from_surface(avg_dir / f'{hemi}.pial')
+
+            # calculate offsets along pial normals per array/plate
+            if plate_ids is not None:
+                plate_ids_hemi = plate_ids[hemi_mask]
+            else:
+                # treat all electrodes as one plate
+                plate_ids_hemi = np.ones(len(elec_pos_hemi), dtype=int)
+
+            for pid in np.unique(plate_ids_hemi):
+                plate_idx = plate_ids_hemi == pid
+                plate_vert_idx = vert_idx[plate_idx]
+                plate_normal = _calc_plate_normal(smooth_mesh, plate_vert_idx, outward_only=True)
+
+                plate_mag = _calc_plate_magnitude(pial_mesh, targets, plate_normal)
+                pos_hemi[plate_idx] += plate_mag * plate_normal
+                    
+        # apply rigid plate fitting
         if geometry == 'rigid_plate' and plate_ids is not None:
             plate_ids_hemi = plate_ids[hemi_mask]
             pos_hemi = _rigid_fit_plates(
-                elec_pos_hemi, targets, plate_ids_hemi)
-
-        if visibility == 'normal_offset':
-            pial_verts, normals = pial_cache[hemi]
-            if use_outer:
-                smoothed_fname = f'{hemi}.pial-outer-smoothed'
-            else:
-                smoothed_fname = f'{hemi}.pial'
-            smoothed_verts, _ = mne.read_surface(avg_dir / smoothed_fname)
-            pos_hemi = _apply_normal_offset(
-                pos_hemi, vert_idx, pial_verts, smoothed_verts,
-                normals, offset_mm)
+                elec_pos_hemi, pos_hemi, plate_ids_hemi)
 
         avg_proj_verts.append(pos_hemi)
 
-    return np.concatenate(avg_proj_verts, axis=0)
-        
+    return np.concatenate(avg_proj_verts, axis=0) # return in average brain space
+
+
+def _build_trimesh_from_surface(surface_path: Path) -> trimesh.Trimesh:
+    """Build a Trimesh object from a surface file."""
+    vertices, faces = mne.read_surface(surface_path)
+    mesh = trimesh.Trimesh(vertices=vertices, faces=faces)
+    return mesh
+
+
+def _calc_plate_normal(smooth_mesh: trimesh.Trimesh, vert_idx: np.ndarray, outward_only: bool = True) -> np.ndarray:
+    # get pial mesh normals at plate vertices
+    smooth_normals = smooth_mesh.vertex_normals[vert_idx]
+
+    # use mean normal as refernce (should point outward)
+    mean_normal_init = smooth_normals.mean(axis=0)
+    mean_normal_init /= np.linalg.norm(mean_normal_init) # unit
+
+    # no filtering for inward normals
+    if not outward_only:
+        return mean_normal_init
+
+    # remove inward normals assuming mean is outward
+    # (inward normals will have negative dot product with ref)
+    mask = (smooth_normals @ mean_normal_init) > 0
+    mean_normal = smooth_normals[mask].mean(axis=0)
+    mean_normal /= np.linalg.norm(mean_normal)
+    return mean_normal
+
+# add typing to header docstring
+def _calc_plate_magnitude(target_mesh: trimesh.Trimesh, origins: np.ndarray, direction: np.ndarray, bidirectional: bool = True, percentile: float = 99) -> float:
+    """Calculate the magnitude of the projection of the origins onto the direction."""
+    # duplicate direction for all origins if only casting in single direction
+    if 1 in direction.shape or direction.ndim == 1:
+        direction = np.tile(direction.flatten(), (len(origins), 1))
+
+    locs_pos, ray_idx_pos, _ = target_mesh.ray.intersects_location(origins, direction, multiple_hits=False)
+
+    valid_dists = []
+    # use distances from positive direction only
+    if not bidirectional:
+        for i, ray_idx in enumerate(ray_idx_pos):
+            dist = np.linalg.norm(locs_pos[i] - origins[ray_idx], axis=0)
+            valid_dists.append(dist)
+    
+    # project ray in opposite direction and filter out hits that are closer in the negative direction
+    else:
+        locs_neg, ray_idx_neg, _ = target_mesh.ray.intersects_location(origins, -direction, multiple_hits=False)
+
+        neg_dist_by_ray = {}
+        for i, ray_idx in enumerate(ray_idx_neg):
+            dist = np.linalg.norm(locs_neg[i] - origins[ray_idx], axis=0)
+            neg_dist_by_ray[ray_idx] = dist
+
+        for i, ray_idx in enumerate(ray_idx_pos):
+            pos_dist = np.linalg.norm(locs_pos[i] - origins[ray_idx], axis=0)
+            neg_dist = neg_dist_by_ray.get(ray_idx, np.inf)
+            if pos_dist < neg_dist:
+                valid_dists.append(pos_dist)
+
+    # proj_magnitude = np.percentile(valid_dists, percentile)
+    proj_magnitude = np.max(valid_dists)
+    return proj_magnitude
+
 
 def read_talxfm(subject: str, subjects_dir: PathLike[str]) -> np.ndarray:
     """Compute the surface-RAS (tkrRAS) -> MNI Talairach transform.
