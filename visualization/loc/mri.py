@@ -18,6 +18,7 @@ from mne.viz import Brain
 from os import PathLike
 from pathlib import Path
 import copy
+import matplotlib.cm as cm
 
 logger = logging.getLogger(__name__)
 
@@ -25,6 +26,8 @@ _GRID_NAME = re.compile(r'^R(\d+)-C(\d+)$')
 
 SUBJECTS_DIR = Path('~/cworkspace/ECoG_Recon').expanduser()
 BIDS_ROOT = Path('~/cworkspace/BIDS_1.0_Lexical_µECoG/BIDS').expanduser()
+
+DEFAULT_ELEC_SIZE = 0.2 # mm
 
 def plot_subj(subj: str, subj_dir: PathLike[str] = SUBJECTS_DIR,
               bids_root: PathLike[str] = BIDS_ROOT,
@@ -113,7 +116,7 @@ def _get_elec_pos(subj: str, bids_root: PathLike[str],
     sizes = None
     if return_sizes and 'size' in elec_df.columns:
         # size column is diameter in mm, need to convert to surface area
-        diams = elec_df['size'].to_numpy(dtype=float)
+        diams = elec_df['size'].fillna(DEFAULT_ELEC_SIZE).to_numpy(dtype=float)
         sizes = np.pi * (diams / 2) ** 2
 
     if return_sizes and return_names:
@@ -171,6 +174,57 @@ def _plot_elecs_on_brain(fig: Brain, coords: ArrayLike,
     return fig
 
 
+def _default_subj_colors(n_subjs: int, cmap_name: str = 'tab10') -> list:
+    """Return ``n_subjs`` distinct colors from a matplotlib colormap."""
+    if n_subjs == 0:
+        return []
+    cmap = cm.get_cmap(cmap_name)
+    if n_subjs == 1:
+        return [cmap(0.0)]
+    return [cmap(i / (n_subjs - 1)) for i in range(n_subjs)]
+
+
+def _resolve_subj_colors(subjs: list[str],
+                         subj_cmap: str | list | tuple | dict | None = None
+                         ) -> dict[str, str | tuple | np.ndarray]:
+    """Map each subject id to a focus color.
+
+    Parameters
+    ----------
+    subjs
+        Subject ids in plot order.
+    subj_cmap
+        Override for the default per-subject palette.  A matplotlib colormap
+        name (e.g. ``'tab10'``), an ordered list of colors (cycled if
+        shorter than ``subjs``), or a ``{subj: color}`` dict.  Subjects
+        missing from a dict receive colors from ``tab10``.
+    """
+    n = len(subjs)
+    if n == 0:
+        return {}
+
+    if subj_cmap is None:
+        colors = _default_subj_colors(n)
+        return dict(zip(subjs, colors))
+
+    if isinstance(subj_cmap, dict):
+        fallback = _default_subj_colors(n)
+        return {s: subj_cmap.get(s, fallback[i]) for i, s in enumerate(subjs)}
+
+    if isinstance(subj_cmap, str):
+        colors = _default_subj_colors(n, cmap_name=subj_cmap)
+        return dict(zip(subjs, colors))
+
+    if isinstance(subj_cmap, (list, tuple)):
+        if len(subj_cmap) == 0:
+            raise ValueError('subj_cmap list must not be empty')
+        return {s: subj_cmap[i % len(subj_cmap)] for i, s in enumerate(subjs)}
+
+    raise TypeError(
+        f'subj_cmap must be a colormap name, color list, dict, or None; '
+        f'got {type(subj_cmap).__name__}')
+
+
 def plot_subjs_on_avg(subjs: list[str], subj_dir: PathLike[str] = SUBJECTS_DIR,
                       bids_root: PathLike[str] = BIDS_ROOT,
                       avg_subj: str = 'cvs_avg35_inMNI152',
@@ -182,8 +236,16 @@ def plot_subjs_on_avg(subjs: list[str], subj_dir: PathLike[str] = SUBJECTS_DIR,
                       units: str = 'mm',
                       visibility: str = 'normal_offset',
                       offset_mm: float | None = None,
-                      geometry: str = 'rigid_plate') -> Brain:
-    """Plot electrodes from multiple subjects on an average brain surface."""
+                      geometry: str = 'rigid_plate',
+                      subj_cmap: str | list | tuple | dict | None = None
+                      ) -> Brain:
+    """Plot electrodes from multiple subjects on an average brain surface.
+
+    By default each subject is drawn in a distinct color from the ``tab10``
+    colormap.  Pass ``subj_cmap`` to override (colormap name, color list, or
+    ``{subj: color}`` dict).  A ``color`` entry in ``elec_kwargs`` applies
+    the same color to every subject and overrides ``subj_cmap``.
+    """
     subj_dir = Path(subj_dir)
 
     if avg_subj not in ['fsaverage', 'cvs_avg35_inMNI152']:
@@ -207,13 +269,20 @@ def plot_subjs_on_avg(subjs: list[str], subj_dir: PathLike[str] = SUBJECTS_DIR,
         sph_kwargs = dict(visibility=visibility, offset_mm=offset_mm,
                           geometry=geometry, bids_root=bids_root)
 
+    use_subj_colors = 'color' not in elec_kwargs
+    subj_colors = (_resolve_subj_colors(subjs, subj_cmap)
+                     if use_subj_colors else None)
+
     for subj in subjs:
         elec_pos = _get_elec_pos(subj, bids_root)
         avg_elec_pos = avg_fun(
             elec_pos, subj, avg_subj, subj_dir, **sph_kwargs)
+        subj_elec_kwargs = dict(elec_kwargs)
+        if subj_colors is not None:
+            subj_elec_kwargs['color'] = subj_colors[subj]
         fig = plot_subj(subj, subj_dir, bids_root, elec_pos=avg_elec_pos,
-                        fig=fig, elec_kwargs=elec_kwargs,
-                        brain_kwargs=brain_kwargs)
+                        fig=fig, elec_kwargs=subj_elec_kwargs,
+                        brain_kwargs=brain_kwargs, units=units)
     return fig
 
 
@@ -475,12 +544,12 @@ def _calc_avg_sph(elec_pos: ArrayLike, subj: str, avg_subj: str,
                 plate_ids_hemi = np.ones(len(elec_pos_hemi), dtype=int)
 
             for pid in np.unique(plate_ids_hemi):
-                plate_idx = plate_ids_hemi == pid
-                plate_vert_idx = vert_idx[plate_idx]
+                plate_mask = plate_ids_hemi == pid
+                plate_vert_idx = vert_idx[plate_mask]
                 plate_normal = _calc_plate_normal(smooth_mesh, plate_vert_idx, outward_only=True)
 
                 plate_mag = _calc_plate_magnitude(pial_mesh, targets, plate_normal)
-                pos_hemi[plate_idx] += plate_mag * plate_normal
+                pos_hemi[plate_mask] += plate_mag * plate_normal
                     
         # apply rigid plate fitting
         if geometry == 'rigid_plate' and plate_ids is not None:
