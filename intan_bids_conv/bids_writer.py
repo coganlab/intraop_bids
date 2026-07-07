@@ -25,12 +25,14 @@ import re
 from pathlib import Path
 from typing import Optional, Union
 
+import hydra
 import h5py
 import mne
 import numpy as np
 import os
 import pandas as pd
 from mne_bids import BIDSPath, write_raw_bids, write_anat
+from omegaconf import DictConfig, OmegaConf
 
 logger = logging.getLogger(__name__)
 
@@ -100,7 +102,7 @@ def remove_arpabet_stress(phoneme: str) -> str:
     return re.sub(r'\d', '', phoneme)
 
 
-def remove_orphan_stimuli(events_df, response_window_sec=4.0):
+def remove_orphan_stimuli(events_df, response_window_sec=4.5):
     """Drop stimulus rows that lack a matching response within *response_window_sec*."""
     base_types = events_df['trial_type'].str.split('/').str[0]
     is_stim = base_types == 'stimulus'
@@ -818,6 +820,9 @@ class BIDSConverter:
                 if temp_file is not None and temp_file.exists():
                     temp_file.unlink()
 
+        # flip CT orientation upside down
+        
+
         # --- CT ---
         ct_source_file = subject_anat_source_dir / 'postimpRaw.nii.gz'
         if ct_source_file.exists():
@@ -1146,20 +1151,35 @@ class BIDSConverter:
 # CLI entry point
 # ---------------------------------------------------------------------------
 
-def main(
-    source_path: Path,
-    subject: str,
-    task: str,
-    fileIDs: Optional[tuple] = None,
-    array_type: Optional[str] = None,
-    num_arrays: int = 1,
-    recon_path: Optional[Path] = None,
-):
+@hydra.main(version_base=None, config_path='config',
+            config_name='bids_writer')
+def main(cfg: DictConfig) -> None:
     """Run the full Intan RHD -> BIDS conversion pipeline."""
+    missing_keys = OmegaConf.missing_keys(cfg)
+    if missing_keys:
+        raise RuntimeError(f'Missing configuration keys: {missing_keys}')
+
+    logger.info(f'Running with configuration:\n{OmegaConf.to_yaml(cfg)}')
+
     try:
         from dataloaders import rhdLoader
     except ImportError:
         from .dataloaders import rhdLoader
+
+    subject = cfg.subject
+    task = cfg.task
+    source_path = (
+        Path(cfg.source_path).expanduser()
+        if cfg.source_path is not None else None
+    )
+    recon_path = (
+        Path(cfg.recon_path).expanduser()
+        if cfg.recon_path is not None else None
+    )
+    
+    fileIDs = tuple(cfg.fileIDs) if cfg.fileIDs is not None else None
+    array_type = cfg.array_type
+    num_arrays = int(cfg.num_arrays)
 
     if task == 'lexical':
         bids_root = Path.home() / 'Box' / 'CoganLab' / 'BIDS_1.0_Lexical_\u00b5ECoG' / 'BIDS'
@@ -1173,13 +1193,13 @@ def main(
         num_arrays=num_arrays,
     )
 
-    # # standard data loading pipeline
-    # loader.load_data()
-    # loader.make_cue_events()
-    # loader.run_mfa(task_name=TASK2MFA[task])
+    # standard data loading pipeline
+    loader.load_data()
+    loader.make_cue_events()
+    loader.run_mfa(task_name=TASK2MFA[task])
 
-    # update impedance and bad channels
-    loader.update_impedance() 
+    # # update impedance and bad channels
+    # loader.update_impedance()
 
     bids_converter = BIDSConverter(
         source_path=loader.out_dir,
@@ -1194,71 +1214,5 @@ def main(
     # bids_converter.update_bids_channel_names()
 
 
-if __name__ == "__main__":
-    import argparse
-
-    parser = argparse.ArgumentParser()
-
-    parser.add_argument(
-        "--source-path",
-        default=None,
-        help=(
-            'Directory containing the RHD source data files. If not provided, '
-            'the user will be prompted to select a directory via GUI. This '
-            'directory should also contain the trialInfo file from the task '
-            'computer.'
-        ),
-    )
-    parser.add_argument(
-        "--subject",
-        default=None,
-        help='Subject identifier (e.g., S41)',
-    )
-    parser.add_argument(
-        "--fileIDs",
-        nargs=2,
-        type=int,
-        default=None,
-        metavar=('START', 'END'),
-        help=(
-            'Inclusive start and end (1-indexed) of the contiguous range of '
-            'RHD files to process when ordered alphabetically in the source '
-            'data directory (e.g. for the 5th through 10th files, use '
-            '--fileIDs 5 10)'
-        ),
-    )
-    parser.add_argument(
-        "--array-type",
-        default=None,
-        help=(
-            'Type of electrode array '
-            '(128-strip, 256-grid, 256-strip, 1024-grid, hybrid-strip)'
-        ),
-    )
-    parser.add_argument(
-        "--num-arrays",
-        type=int,
-        default=1,
-        help=(
-            'Number of identical arrays used (default: 1). '
-            'When > 1, the channel map is vertically stacked with '
-            'offset channel indices for each copy.'
-        ),
-    )
-    parser.add_argument(
-        "--recon-path",
-        default=Path.home() / "Box" / "ECoG_Recon",
-        type=Path,
-        help=(
-            'Parent directory containing subject anatomical subdirectories '
-            '(e.g., ECoG_Recon/)'
-        ),
-    )
-    parser.add_argument(
-        "--task",
-        default="lexical",
-        help='Name of the task (default: lexical)',
-    )
-
-    args = parser.parse_args()
-    main(**vars(args))
+if __name__ == '__main__':
+    main()
