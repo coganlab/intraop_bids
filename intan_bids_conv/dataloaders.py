@@ -64,7 +64,13 @@ class rhdLoader:
             rhd_dir = filedialog.askdirectory(
                 title=f'Select RHD data directory for subject {subject}')
         self.rhd_dir = Path(rhd_dir)
-        self.fileIDs = (int(fileIDs[0]), int(fileIDs[1])) if fileIDs is not None else None
+        # self.fileIDs = (int(fileIDs[0]), int(fileIDs[1])) if fileIDs is not None else None
+        # allow fileIDs to be None (no selection), have a single None (lower or upper bound), or all integers (lower and upper bound)
+        self.fileIDs = [None, None]
+        if fileIDs is not None:
+            for i, fileID in enumerate(fileIDs):
+                self.fileIDs[i] = int(fileID) if isinstance(fileID, int) else None
+        self.fileIDs = tuple(self.fileIDs)
 
         if array_type is None:
             # arr_types = ['128-strip', '256-grid', '256-strip', '256-strip-old', '1024-grid-S82', 'hybrid-strip', 'hybrid-strip-old']
@@ -135,7 +141,8 @@ class rhdLoader:
         logger.info('...data loading complete.')
         return self
 
-    def make_cue_events(self) -> None:
+    def make_cue_events(self,
+                        upper_threshold_v: Optional[float] = None) -> None:
         """Create cue event timings by cross-correlating stimulus audio.
 
         This method loads trial information, denoises the microphone trace,
@@ -143,6 +150,11 @@ class rhdLoader:
         trigger onsets, cross-correlates each stimulus with the mic trace to
         find precise stimulus onsets/offsets, and writes a
         `cue_events.txt` file in the subject output directory.
+
+        Args:
+            upper_threshold_v: Optional maximum trigger voltage (V) to accept
+                as a trial peak. Peaks above this value are ignored (e.g. a
+                large block-start pulse that exceeds normal trigger amplitude).
 
         Raises:
             FileNotFoundError: If the trialInfo.mat file is not found in the
@@ -195,7 +207,9 @@ class rhdLoader:
 
         trigger = np.load(self.out_dir / f'sub-{self.subject}' / ('sub-' +
                           self.subject + '_trigger.npy'))
-        trig_times = self.detect_trigger_onsets(trigger, fs)
+        trig_times = self.detect_trigger_onsets(
+            trigger, fs, upper_threshold_v=upper_threshold_v,
+        )
 
         # === Process trials ===
         with open(self.out_dir / f'sub-{self.subject}' / 'cue_events.txt',
@@ -236,6 +250,7 @@ class rhdLoader:
                               threshold_factor: float = 5.0,
                               task_start_buffer_s: float = 3.0,
                               peak_rejection_factor: float = 7.0,
+                              upper_threshold_v: Optional[float] = None,
                               interactive: bool = True) -> np.ndarray:
         """
         Automatically detect trial trigger onsets from a photodiode trace.
@@ -257,6 +272,8 @@ class rhdLoader:
                 peak to ensure the search window excludes the wide pulse.
             peak_rejection_factor: Multiplier of peak-height SD used to reject
                 amplitude outliers.
+            upper_threshold_v: Optional maximum trigger voltage (V) to accept
+                as a trial peak. Peaks above this value are ignored.
             interactive: If True, show plots and permit manual overrides via
                 the console.
 
@@ -295,9 +312,11 @@ class rhdLoader:
             trig_post - baseline_post, scale='normal',
         )
         threshold = baseline_post + threshold_factor * noise_std_post
+        trial_height = ((threshold, upper_threshold_v)
+                        if upper_threshold_v is not None else threshold)
 
         min_samples = int(min_dist_s * fs)
-        peaks_trials, props_trials = find_peaks(trig_post, height=threshold,
+        peaks_trials, props_trials = find_peaks(trig_post, height=trial_height,
                                                 distance=min_samples)
         trial_onsets = (peaks_trials + task_start_idx) / fs
 
@@ -318,6 +337,9 @@ class rhdLoader:
         plt.plot(t_axis, trig, label="Trigger")
         plt.axhline(threshold, color='r', linestyle='--',
                     label=f"Trial threshold = {threshold:.3f}")
+        if upper_threshold_v is not None:
+            plt.axhline(upper_threshold_v, color='m', linestyle='--',
+                        label=f"Upper threshold = {upper_threshold_v:.3f}")
         plt.axvline(task_start_time, color='g', linestyle='--',
                     label="Task start")
         plt.plot(trial_onsets, trig[(trial_onsets * fs).astype(int)], 'rx',
@@ -345,8 +367,13 @@ class rhdLoader:
                     start_idx = int(start_time * fs)
                     end_idx = int(end_time * fs)
                     trig_crop = trig[start_idx:end_idx]
-                    peaks_manual, _ = find_peaks(trig_crop, height=threshold,
-                                                 distance=int(min_dist_s*fs))
+                    manual_height = ((threshold, upper_threshold_v)
+                                     if upper_threshold_v is not None
+                                     else threshold)
+                    peaks_manual, _ = find_peaks(
+                        trig_crop, height=manual_height,
+                        distance=int(min_dist_s * fs),
+                    )
                     trial_onsets = (peaks_manual + start_idx) / fs
 
                     print(f"✅ {len(trial_onsets)} trials detected manually.")
@@ -470,6 +497,10 @@ class rhdLoader:
         # only keep files selected by numerical IDs corresponding to order
         if self.fileIDs is not None:
             start, end = self.fileIDs
+            if start is None:
+                start = 1
+            if end is None:
+                end = len(rhd_files)
             logger.info(f'Using RHD files: {start} through {end}')
             rhd_files = [f for i, f in enumerate(rhd_files)
                          if start <= i + 1 <= end]
