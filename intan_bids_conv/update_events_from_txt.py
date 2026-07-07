@@ -140,6 +140,7 @@ def _update_word_events(bids_path, subject, fs, stim_txt, resp_txt):
     # check that number of stimulus and response events are the same after removing orphan stimuli
     stim_events_updated = updated_df[updated_df['trial_type'] == 'stimulus']
     resp_events_updated = updated_df[updated_df['trial_type'] == 'response']
+    # print(len(stim_events_updated), len(resp_events_updated))
     if len(stim_events_updated) != len(resp_events_updated):
         logger.error('Number of stimulus and response events are not the same after removing orphan stimuli')
         return
@@ -249,11 +250,17 @@ def _resolve_txt_path(txt_path, subject):
     txt_path = Path(txt_path)
     if txt_path.exists():
         return txt_path
-    fallback = DEFAULT_DATA_DIR / f'sub-{subject}' / txt_path
-    if fallback.exists():
-        return fallback
+    fallback_adj = DEFAULT_DATA_DIR / f'sub-{subject}' / txt_path
+    if 'adj' in txt_path.name:
+        fallback_orig = Path(str(fallback_adj).replace('mfa_adj_', 'mfa_'))
+    else:
+        fallback_orig = Path('\0')
+    if fallback_adj.exists():
+        return fallback_adj
+    elif fallback_orig.exists():
+        return fallback_orig
     raise FileNotFoundError(
-        f"Text file not found at {txt_path} or {fallback}"
+        f"Text file not found at {txt_path} or {fallback_adj} or {fallback_orig}"
     )
 
 
@@ -268,11 +275,6 @@ def _write_json(json_path, metadata):
 # ---------------------------------------------------------------------------
 
 def parse_args():
-    user_path = Path.home()
-    default_bids_root = (
-        user_path / 'Box' / 'CoganLab'
-        / 'BIDS_1.0_Lexical_\u00b5ECoG' / 'BIDS'
-    )
     default_task = 'lexical'
 
     parser = argparse.ArgumentParser(
@@ -280,10 +282,6 @@ def parse_args():
             'Update word-level and phoneme-level BIDS events.tsv '
             'from corrected .txt files.'
         ),
-    )
-    parser.add_argument(
-        '--bids_root', default=default_bids_root,
-        help='Path to BIDS root directory',
     )
     parser.add_argument(
         '--subject', required=True,
@@ -296,7 +294,7 @@ def parse_args():
 
     # Word-level txt files
     parser.add_argument(
-        '--stim_txt', default='mfa_stim_words.txt',
+        '--stim_txt', default='mfa_adj_stim_words.txt',
         help='Path to corrected word-level stimulus .txt file',
     )
     parser.add_argument(
@@ -306,7 +304,7 @@ def parse_args():
 
     # Phoneme-level txt files (optional)
     parser.add_argument(
-        '--stim_phon_txt', default='mfa_stim_phones.txt',
+        '--stim_phon_txt', default='mfa_adj_stim_phones.txt',
         help='Path to corrected phoneme-level stimulus .txt file',
     )
     parser.add_argument(
@@ -320,8 +318,15 @@ def parse_args():
 def main():
     args = parse_args()
 
+    if args.task == 'lexical':
+        bids_root = Path.home() / 'Box' / 'CoganLab' / 'BIDS_1.0_Lexical_\u00b5ECoG' / 'BIDS'
+    elif args.task == 'phoneme':
+        bids_root = Path.home() / 'Box' / 'CoganLab' / 'BIDS_1.0_Phoneme_Sequence_uECoG' / 'BIDS'
+    else:
+        raise ValueError(f'Invalid task: {args.task}')
+
     update_events_from_txt(
-        bids_root=args.bids_root,
+        bids_root=bids_root,
         subject=args.subject,
         task=args.task,
         stim_txt=args.stim_txt,
