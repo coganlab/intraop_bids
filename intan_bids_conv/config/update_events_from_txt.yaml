@@ -1,0 +1,18 @@
+subject: ???
+# subject: S85
+
+task: lexical
+# task: phoneme
+
+# Word-level corrected MFA token files (relative to sub-{subject}/ or absolute).
+# Set to null to skip word-level updates.
+stim_txt: mfa_adj_stim_words.txt
+resp_txt: mfa_adj_resp_words.txt
+
+# Phoneme-level corrected MFA token files. Both are required for phoneme-level
+# updates; set either to null to skip phoneme-level updates.
+stim_phon_txt: mfa_adj_stim_phones.txt
+resp_phon_txt: mfa_adj_resp_phones.txt
+
+# Window in seconds to consider for response events.
+response_window_sec: 3.0
