@@ -32,7 +32,8 @@ class rhdLoader:
                  out_dir: Optional[Union[str, Path]] = None,
                  fileIDs: Optional[tuple[int, int]] = None,
                  array_type: Optional[str] = None,
-                 num_arrays: int = 1) -> None:
+                 num_arrays: int = 1,
+                 missing_data_idx: Optional[Sequence[int]] = None) -> None:
         """Initialize an RHD data loader.
 
         Args:
@@ -50,7 +51,10 @@ class rhdLoader:
             num_arrays: Number of identical arrays used (default 1).  When
                 greater than 1 the base channel map is vertically stacked
                 with offset channel indices for each copy.
-
+            missing_data_idx: Sequence of 0-indexed channel numbers that are
+                missing from the data. If None, all channels are assumed to be
+                present. Missing channels are set to NaN in the returned data.
+                Default is None.
         Returns:
             None
         """
@@ -71,6 +75,8 @@ class rhdLoader:
             for i, fileID in enumerate(fileIDs):
                 self.fileIDs[i] = int(fileID) if isinstance(fileID, int) else None
         self.fileIDs = tuple(self.fileIDs)
+
+        self.missing_data_idx = missing_data_idx
 
         if array_type is None:
             # arr_types = ['128-strip', '256-grid', '256-strip', '256-strip-old', '1024-grid-S82', 'hybrid-strip', 'hybrid-strip-old']
@@ -93,13 +99,18 @@ class rhdLoader:
             self.channel_map = self._get_channel_map(array_type)
         self.save_channel_map()
 
-    def load_data(self) -> "rhdLoader":
+    def load_data(self, use_ext_mic: bool = False) -> "rhdLoader":
         """Load RHD data for the initialized subject and save artifacts.
 
         This function finds the subject RHD files, reads them, computes bad
-        channels based on impedance, saves the raw data as an HDF5 file, and
-        writes additional miscellaneous arrays (trigger, mic, impedance) as
-        NumPy files in the subject output directory.
+        channels based on impedance, saves the raw data as an HDF5 file,
+        saves trigger and impedance as NumPy files, saves the raw RHD
+        microphone trace as a WAV file, and writes ``allblocks.wav`` for MFA
+        (from the external microphone or a verbatim copy of the RHD mic).
+
+        Args:
+            use_ext_mic: If True, copy ``sub-{subject}_micExt.wav`` verbatim
+                to ``allblocks.wav``. Otherwise copy the saved RHD mic WAV.
 
         Returns:
             The loader instance (self) to allow method chaining.
@@ -109,7 +120,7 @@ class rhdLoader:
                     f'from directory: {self.rhd_dir}...')
         rhd_files = self._get_subj_files()
         print(f'Found files: {rhd_files}')
-        all_data = self._build_full_rhd_data(rhd_files, fs_down)
+        all_data = self._build_full_rhd_data(rhd_files, fs_down, self.missing_data_idx)
 
         # calculate bad channels based on impedance
         bad_channels = self._get_high_impedance_channels(all_data['impedance'])
@@ -132,37 +143,79 @@ class rhdLoader:
         # save misc rhd data as numpy files in output dir
         _ = self._save_rhd_misc_data(all_data['trigger'],
                                      f'sub-{self.subject}_trigger.npy')
-        _ = self._save_rhd_misc_data(all_data['mic'],
-                                     f'sub-{self.subject}_mic.npy')
+        _ = self._save_mic_wav(all_data['mic'], all_data['fs'])
         _ = self._save_rhd_misc_data(all_data['impedance'],
                                      f'sub-{self.subject}_impedance.npy')
         self.fs = all_data['fs']
+
+        allblocks_path = self._allblocks_wav_path()
+        if use_ext_mic:
+            ext_path = self._mic_ext_wav_path()
+            if not ext_path.exists():
+                raise FileNotFoundError(
+                    f'External microphone WAV not found: {ext_path}')
+            logger.info(
+                f'Copying external microphone from {ext_path} to '
+                f'{allblocks_path}')
+            shutil.copyfile(ext_path, allblocks_path)
+        else:
+            logger.info(
+                f'Copying RHD microphone to {allblocks_path} for MFA')
+            shutil.copyfile(self._mic_wav_path(), allblocks_path)
+        logger.info('...allblocks.wav saved successfully.')
 
         logger.info('...data loading complete.')
         return self
 
     def make_cue_events(self,
-                        upper_threshold_v: Optional[float] = None) -> None:
+                        upper_threshold_v: Optional[float] = None,
+                        use_ext_trigger: bool = False,
+                        use_ext_mic: bool = False,
+                        prop_decrease: float = 0.9) -> None:
         """Create cue event timings by cross-correlating stimulus audio.
 
-        This method loads trial information, denoises the microphone trace,
-        loads stimulus WAV files referenced by the trial information, detects
-        trigger onsets, cross-correlates each stimulus with the mic trace to
-        find precise stimulus onsets/offsets, and writes a
-        `cue_events.txt` file in the subject output directory.
+        This method loads the ``allblocks.wav`` microphone trace, optionally
+        denoises it (RHD microphone only), loads stimulus WAV files
+        referenced by the trial information, detects trigger onsets,
+        cross-correlates each stimulus with the mic trace to find precise
+        stimulus onsets/offsets, and writes a ``cue_events.txt`` file in the
+        subject output directory.
 
         Args:
             upper_threshold_v: Optional maximum trigger voltage (V) to accept
                 as a trial peak. Peaks above this value are ignored (e.g. a
                 large block-start pulse that exceeds normal trigger amplitude).
-
+            use_ext_trigger: If True, use the trigger onsets saved in the
+                subject directory instead of calculating from trigger trace.
+            use_ext_mic: If True, skip denoising (external microphone is
+                already clean).
+            prop_decrease: Proportion of noise to remove from the RHD
+                microphone during denoising (1.0 = 100%).
         Raises:
-            FileNotFoundError: If the trialInfo.mat file is not found in the
-                RHD data directory.
+            FileNotFoundError: If ``allblocks.wav`` or ``trialInfo.mat`` is
+                not found.
         """
         xcorr_start_buffer = 0.5  # seconds
         xcorr_end_buffer = 0.7  # seconds
 
+        mic, fs = self._load_allblocks()
+        if not use_ext_mic:
+            logger.info('Denoising microphone trace for cue-event alignment...')
+            mic = nr.reduce_noise(
+                y=mic, sr=fs, stationary=False, prop_decrease=prop_decrease,
+            )
+
+        # load or calculate trigger onsets
+        if use_ext_trigger:
+            trig_times = np.loadtxt(self.out_dir / f'sub-{self.subject}' / f'sub-{self.subject}_triggerExt.csv', delimiter=',')
+        else:
+            trigger = np.load(self.out_dir / f'sub-{self.subject}' / ('sub-' +
+                            self.subject + '_trigger.npy'))
+            trig_times = self.detect_trigger_onsets(
+                trigger, fs, upper_threshold_v=upper_threshold_v,
+            )
+
+        # load trial information
         trialInfo_path = self.rhd_dir / 'trialInfo.mat'
         if not trialInfo_path.exists():
             logger.error(f'trialInfo.mat file not found in {self.rhd_dir}')
@@ -170,12 +223,6 @@ class rhdLoader:
                                     f'{self.rhd_dir}')
         trial_info = loadmat(trialInfo_path)['trialInfo'].squeeze()
 
-        mic = np.load(self.out_dir / f'sub-{self.subject}' / ('sub-' +
-                      self.subject + '_mic.npy'))
-
-        fs = self._get_fs()
-        mic_denoised = nr.reduce_noise(y=mic, sr=fs,
-                                       stationary=False, prop_decrease=0.9)
 
         stim_files = self._get_stim_dir().rglob('**/*.wav')
 
@@ -205,12 +252,6 @@ class rhdLoader:
             stim_name_no_ext = Path(stim_name).stem
             stims[stim_name_no_ext] = stim_resamp
 
-        trigger = np.load(self.out_dir / f'sub-{self.subject}' / ('sub-' +
-                          self.subject + '_trigger.npy'))
-        trig_times = self.detect_trigger_onsets(
-            trigger, fs, upper_threshold_v=upper_threshold_v,
-        )
-
         # === Process trials ===
         with open(self.out_dir / f'sub-{self.subject}' / 'cue_events.txt',
                   'w') as fid_cue:
@@ -224,8 +265,8 @@ class rhdLoader:
                 # Define cross-correlation search window
                 xcorr_start = int(max((on - xcorr_start_buffer) * fs, 0))
                 xcorr_end = int(min((on + xcorr_end_buffer) * fs,
-                                    len(mic_denoised)))
-                allblocks_win = mic_denoised[xcorr_start:xcorr_end]
+                                    len(mic)))
+                allblocks_win = mic[xcorr_start:xcorr_end]
 
                 # Cross-correlation
                 xcorr_val = correlate(allblocks_win, curr_stim_aud,
@@ -394,32 +435,36 @@ class rhdLoader:
 
         return trial_onsets
 
-    def run_mfa(self, task_name: str = 'phoneme_sequencing') -> bool:
+    def run_mfa(self, task_name: str = 'phoneme_sequencing', denoise_mic: bool = True) -> bool:
         """Run the Montreal Forced Aligner (MFA) pipeline for this subject.
 
-        This method copies trialInfo.mat to the subject output directory,
-        writes the microphone trace to a WAV file, then invokes the external
-        MFA pipeline script. If MFA completes successfully, MFA-produced
-        token files are moved into the subject directory.
+        This method copies ``trialInfo.mat`` to the subject output directory
+        and invokes the external MFA pipeline script, which reads
+        ``allblocks.wav``. MFA applies its own noise reduction during
+        alignment. If MFA completes successfully, MFA-produced token files
+        are moved into the subject directory.
 
         Args:
             task_name: Name of the MFA task configuration to run (keys in
-                the `MFA_pipeline/conf/task` folder).
-
+                the ``MFA_pipeline/conf/task`` folder).
+            denoise_mic: If True, denoise the microphone trace using the when
+                running MFA.
         Returns:
             True if MFA ran and processed successfully, False otherwise.
+
+        Raises:
+            FileNotFoundError: If ``allblocks.wav`` is not found.
         """
+        allblocks_wav_path = self._allblocks_wav_path()
+        if not allblocks_wav_path.exists():
+            raise FileNotFoundError(
+                f'{allblocks_wav_path.name} not found in '
+                f'{allblocks_wav_path.parent}. Run load_data() first.')
+
         # copy trialInfo to subject directory
         trialInfo_src = self.rhd_dir / 'trialInfo.mat'
         trialInfo_dst = self.out_dir / f'sub-{self.subject}' / 'trialInfo.mat'
         shutil.copyfile(trialInfo_src, trialInfo_dst)
-
-        # save microphone data as wav file in subject directory
-        mic = np.load(self.out_dir / f'sub-{self.subject}' / ('sub-' +
-                      self.subject + '_mic.npy'))
-        mic_wav_path = self.out_dir / f'sub-{self.subject}' / 'allblocks.wav'
-        fs = self._get_fs()
-        wavfile.write(mic_wav_path, int(fs), mic.astype(DATA_TYPE))
 
         # run MFA (assumes MFA is cloned to
         # Box/CoganLab/Data/Micro/BIDS_processing/MFA_pipeline)
@@ -429,6 +474,7 @@ class rhdLoader:
                    'task=' + task_name,
                    'patient_dir=' + str(self.out_dir),
                    'patients=sub-' + self.subject,
+                   'denoise=' + str(denoise_mic),
                    ]
         try:
             logger.info(f'Running MFA for subject {self.subject}...')
@@ -557,13 +603,17 @@ class rhdLoader:
         return np.vstack(copies)
 
     def _build_full_rhd_data(
-        self, rhd_files: Sequence[Path], fs_down: float
+        self, rhd_files: Sequence[Path], fs_down: float, missing_data_idx: Optional[Sequence[int]] = None
     ) -> Dict[str, Any]:
         """Read and concatenate data from multiple RHD files.
 
         Args:
             rhd_files: Sequence of Path objects pointing to .rhd files for the
                 subject (typically each file is ~1 minute of data).
+            fs_down: Downsampled sampling frequency in Hz.
+            missing_data_idx: Sequence of 0-indexed channel numbers that are
+                missing from the data. If None, all channels are assumed to be
+                present. Missing channels are set to NaN in the returned data.
 
         Returns:
             A dictionary with keys: 'raw_data' (2D numpy array channels x
@@ -571,6 +621,15 @@ class rhdLoader:
         """
         # loaded as 0-indexed chans
         n_chans = np.nanmax(self.channel_map).astype(int) + 1
+
+        # if data is missing, RHD file will not have all of the corresponding
+        # channels. Account for this by setting the indices of true data
+        # channels given known missing channels
+        data_chans = np.arange(n_chans)
+        if missing_data_idx is not None:
+            data_chans = np.setdiff1d(data_chans, missing_data_idx)
+        
+        
         amplifier_data_all = np.empty((n_chans, 0), dtype=DATA_TYPE)
         trigger_all = np.empty((0,), dtype=DATA_TYPE)
         mic_all = np.empty((0,), dtype=DATA_TYPE)
@@ -589,16 +648,42 @@ class rhdLoader:
                                          axis=1)
             else:
                 amp_data = data['amplifier_data']
+
+            # instantiate amplifier data as NaN array to account for missing data
+            # (do this after resampling to use known time axis)
+            amp_data_full = np.full((n_chans, amp_data.shape[1]), np.nan, dtype=DATA_TYPE)
+            # fill in known data channels with RHD data, remaining are NaN
+            amp_data_full[data_chans, :] = amp_data
+
             amplifier_data_all = np.append(
                 amplifier_data_all,
-                amp_data.astype(DATA_TYPE),
+                amp_data_full.astype(DATA_TYPE),
                 axis=1)
-            trigger_all = np.append(
-                trigger_all,
-                data['board_adc_data'][0, :].astype(DATA_TYPE))
-            mic_all = np.append(
-                mic_all,
-                data['board_adc_data'][1, :].astype(DATA_TYPE))
+            
+            # handle cases where board_adc_data is empty and needs placeholder
+            if 'board_adc_data' not in data:
+                logger.warning(
+                    f'Board ADC data is empty for {rhd_file.name}. '
+                    'Using placeholder values for trigger and '
+                    'microphone. Consider reconstructing this '
+                    'information from the trial information and '
+                    f'supplying sub-{self.subject}_micExt.wav and '
+                    f'sub-{self.subject}_triggerExt.csv in the subject '
+                    'output directory and set use_ext_mic / '
+                    'use_ext_trigger when running load_data() / '
+                    'make_cue_events().')
+
+                outsize = data['amplifier_data'].shape[1]
+                trigger = np.full((outsize,), np.nan, dtype=DATA_TYPE)
+                mic = np.full((outsize,), np.nan, dtype=DATA_TYPE)
+                
+            else:
+                trigger = data['board_adc_data'][0, :].astype(DATA_TYPE)
+                mic = data['board_adc_data'][1, :].astype(DATA_TYPE)
+
+
+            trigger_all = np.append(trigger_all, trigger, axis=0)
+            mic_all = np.append(mic_all, mic, axis=0)
             impedance_all = np.append(
                 impedance_all,
                 self._get_impedance_magnitudes(data)[
@@ -608,10 +693,10 @@ class rhdLoader:
 
             logger.info(f'      Data shape: {data["amplifier_data"].shape}')
             logger.info(
-                f'      Trigger shape: {data["board_adc_data"][0, :].shape}'
+                f'      Trigger shape: {trigger.shape}'
             )
             logger.info(
-                f'      Mic shape: {data["board_adc_data"][1, :].shape}'
+                f'      Mic shape: {mic.shape}'
             )
             logger.info(f'      Impedance shape: '
                         f'{impedance_all[-1].shape}')
@@ -804,6 +889,59 @@ class rhdLoader:
             logger.error(f'Error saving raw data: {e}')
             print('Failed to save raw data. Error written to log.')
             return False
+
+    def _mic_wav_path(self) -> Path:
+        """Return the path to the saved RHD microphone WAV for this subject."""
+        return (self.out_dir / f'sub-{self.subject}' /
+                f'sub-{self.subject}_mic.wav')
+
+    def _mic_ext_wav_path(self) -> Path:
+        """Return the path to an optional external microphone WAV."""
+        return (self.out_dir / f'sub-{self.subject}' /
+                f'sub-{self.subject}_micExt.wav')
+
+    def _allblocks_wav_path(self) -> Path:
+        """Return the path to the all-blocks microphone WAV for MFA."""
+        return self.out_dir / f'sub-{self.subject}' / 'allblocks.wav'
+
+    def _save_mic_wav(self, mic: np.ndarray, fs: float) -> bool:
+        """Save the board-ADC microphone trace as a WAV file.
+
+        Args:
+            mic: 1D microphone voltage trace.
+            fs: Board-ADC sampling rate in Hz.
+
+        Returns:
+            True on success, False on failure.
+        """
+        save_path = self._mic_wav_path()
+        logger.info(f'Saving microphone data to {save_path}...')
+        try:
+            wavfile.write(save_path, int(fs), mic.astype(DATA_TYPE))
+            logger.info('...microphone data saved successfully.')
+            return True
+        except Exception as e:
+            logger.error(f'Error saving microphone data: {e}')
+            print('Failed to save microphone data. Error written to log.')
+            return False
+
+    def _load_allblocks(self) -> Tuple[np.ndarray, float]:
+        """Load the all-blocks microphone WAV.
+
+        Returns:
+            Tuple of (microphone samples, sampling rate in Hz).
+
+        Raises:
+            FileNotFoundError: If ``allblocks.wav`` does not exist.
+        """
+        wav_path = self._allblocks_wav_path()
+        if not wav_path.exists():
+            raise FileNotFoundError(
+                f'{wav_path.name} not found in {wav_path.parent}. '
+                'Run load_data() first.')
+        fs, mic = wavfile.read(wav_path)
+        mic = mic[:, 0] if mic.ndim > 1 else mic
+        return mic.astype(DATA_TYPE), float(fs)
 
     def _save_rhd_misc_data(
         self, data: np.ndarray, fname: Union[str, Path]

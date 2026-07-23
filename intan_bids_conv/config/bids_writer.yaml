@@ -24,4 +24,19 @@ array_type: null
 num_arrays: 1
 
 # Parent directory containing subject anatomical subdirectories.
-recon_path: ~/Box/ECoG_Recon
+recon_path: ~/Box/ECoG_Recon 
+
+# Use external trigger onsets instead of calculating from RHD data.
+use_ext_trigger: false
+# Use sub-{subject}_micExt.wav instead of the RHD microphone for
+# allblocks.wav during load_data(). Denoising for cue-event alignment is
+# skipped automatically when use_ext_mic is true.
+use_ext_mic: false
+
+# Sequence of 0-indexed channel numbers that are missing from the data.
+# If None, all channels are assumed to be present. Missing channels are set
+# to NaN in the returned data. Default is None.
+# missing_data_idx: null
+# missing_data_idx_type: list
+missing_data_idx: [0, 63]
+missing_data_idx_type: range

@@ -102,7 +102,7 @@ def remove_arpabet_stress(phoneme: str) -> str:
     return re.sub(r'\d', '', phoneme)
 
 
-def remove_orphan_stimuli(events_df, response_window_sec=4.5):
+def remove_orphan_stimuli(events_df, response_window_sec=3.0):
     """Drop stimulus rows that lack a matching response within *response_window_sec*."""
     base_types = events_df['trial_type'].str.split('/').str[0]
     is_stim = base_types == 'stimulus'
@@ -146,6 +146,18 @@ def phon_txt2df(txt_path, trial_type, subject, n_phons, fs, task):
     df['trial_type'] = [f'{trial_type}/{p}' for p in position]
     return df[EVENTS_COL_ORDER]
 
+
+def _parse_missing_data_idx(missing_data_idx, type = 'list'):
+    """Parse the missing data index from the configuration."""
+    if type == 'list' and isinstance(missing_data_idx, list):
+        return missing_data_idx
+    elif type == 'range':
+        if isinstance(missing_data_idx, range):
+            return list(missing_data_idx)
+        else:
+            return list(range(missing_data_idx[0], missing_data_idx[-1] + 1))
+    else:
+        raise ValueError(f"Invalid missing data index type: {type}")
 
 # ---------------------------------------------------------------------------
 # BIDSConverter
@@ -1181,6 +1193,8 @@ def main(cfg: DictConfig) -> None:
     array_type = cfg.array_type
     num_arrays = int(cfg.num_arrays)
 
+    missing_data_idx = _parse_missing_data_idx(cfg.missing_data_idx, cfg.missing_data_idx_type)
+
     if task == 'lexical':
         bids_root = Path.home() / 'Box' / 'CoganLab' / 'BIDS_1.0_Lexical_\u00b5ECoG' / 'BIDS'
     elif task == 'phoneme':
@@ -1190,13 +1204,16 @@ def main(cfg: DictConfig) -> None:
 
     loader = rhdLoader(
         subject, source_path, fileIDs=fileIDs, array_type=array_type,
-        num_arrays=num_arrays,
+        num_arrays=num_arrays, 
+        missing_data_idx=missing_data_idx,
     )
 
     # standard data loading pipeline
-    loader.load_data()
-    loader.make_cue_events()
-    loader.run_mfa(task_name=TASK2MFA[task])
+    loader.load_data(use_ext_mic=cfg.use_ext_mic)
+    loader.make_cue_events(
+        use_ext_trigger=cfg.use_ext_trigger, use_ext_mic=cfg.use_ext_mic,
+    )
+    loader.run_mfa(task_name=TASK2MFA[task], denoise_mic=(not cfg.use_ext_mic))
 
     # # update impedance and bad channels
     # loader.update_impedance()
