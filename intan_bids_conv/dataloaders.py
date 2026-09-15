@@ -17,11 +17,17 @@ from typing import Any, Dict, List, Optional, Sequence, Tuple, Union
 
 from load_intan_rhd_format.load_intan_rhd_format import read_data
 
+try:
+    from subject_utils import base_subject_id
+except ImportError:
+    from .subject_utils import base_subject_id
+
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 DATA_TYPE = np.float64
+MISSING_DATA_VALUE = 0
 
 
 class rhdLoader:
@@ -59,6 +65,7 @@ class rhdLoader:
             None
         """
         self.subject = subject
+        self.rhd_subject = base_subject_id(subject)
         if out_dir is None:
             out_dir = self._get_out_dir()
         self.out_dir = Path(out_dir)
@@ -117,6 +124,7 @@ class rhdLoader:
         """
         fs_down = 2000  # target downsampled frequency in Hz
         logger.info(f'Loading RHD data for subject {self.subject} '
+                    f'(RHD/recon prefix: {self.rhd_subject}) '
                     f'from directory: {self.rhd_dir}...')
         rhd_files = self._get_subj_files()
         print(f'Found files: {rhd_files}')
@@ -124,14 +132,24 @@ class rhdLoader:
 
         # calculate bad channels based on impedance
         bad_channels = self._get_high_impedance_channels(all_data['impedance'])
+        if self.missing_data_idx is not None:
+            missing_channels = [int(ch) for ch in self.missing_data_idx]
+            bad_channels = sorted(set(bad_channels) | set(missing_channels))
+            logger.info(
+                'Marked missing data channels as bad (0-indexed): '
+                f'{missing_channels}')
+        else:
+            missing_channels = None
         all_data['bad_channels'] = bad_channels
+        all_data['missing_channels'] = missing_channels
 
         # save raw data as h5 file in output dir
         _ = self._save_raw_data(all_data['raw_data'],
                                 fs_down,
                                 all_data['bad_channels'],
                                 self.channel_map,
-                                f'sub-{self.subject}_raw.h5')
+                                f'sub-{self.subject}_raw.h5',
+                                missing_channels=all_data['missing_channels'])
 
         # # see if we can free up memory here
         del all_data['raw_data']
@@ -537,7 +555,7 @@ class rhdLoader:
             directory. If `self.fileIDs` is provided, the returned list will
             be filtered to those indices (1-indexed by order).
         """
-        pattern = f'{self.subject}*.rhd'
+        pattern = f'{self.rhd_subject}*.rhd'
         # pattern = '*.rhd'
         rhd_files = sorted(self.rhd_dir.glob(pattern))
         # only keep files selected by numerical IDs corresponding to order
@@ -651,7 +669,7 @@ class rhdLoader:
 
             # instantiate amplifier data as NaN array to account for missing data
             # (do this after resampling to use known time axis)
-            amp_data_full = np.full((n_chans, amp_data.shape[1]), np.nan, dtype=DATA_TYPE)
+            amp_data_full = np.full((n_chans, amp_data.shape[1]), MISSING_DATA_VALUE, dtype=DATA_TYPE)
             # fill in known data channels with RHD data, remaining are NaN
             amp_data_full[data_chans, :] = amp_data
 
@@ -684,10 +702,14 @@ class rhdLoader:
 
             trigger_all = np.append(trigger_all, trigger, axis=0)
             mic_all = np.append(mic_all, mic, axis=0)
+
+            # instantiate impedance data as NaN array to account for missing data
+            impedance_full = np.full((1, n_chans), np.nan, dtype=DATA_TYPE)
+            impedance_full[0, data_chans] = self._get_impedance_magnitudes(data)
+            # fill in known data channels with RHD data, remaining are NaN
             impedance_all = np.append(
                 impedance_all,
-                self._get_impedance_magnitudes(data)[
-                    np.newaxis, :].astype(DATA_TYPE),
+                impedance_full.astype(DATA_TYPE),
                 axis=0,
             )
 
@@ -703,7 +725,7 @@ class rhdLoader:
 
         # save impedance as mean across files (don't know if this changes per
         # file or not but if it doesn't mean is still ok)
-        impedance = np.array(impedance_all).mean(axis=0)
+        impedance = np.nanmean(impedance_all, axis=0)
         full_data = {
             'raw_data': amplifier_data_all,
             'trigger': trigger_all,
@@ -861,7 +883,9 @@ class rhdLoader:
                        fs: float,
                        bad_channels: Sequence[int],
                        channel_map: np.ndarray,
-                       fname: Union[str, Path]) -> bool:
+                       fname: Union[str, Path],
+                       missing_channels: Optional[Sequence[int]] = None,
+                       ) -> bool:
         """Save raw data and metadata to an HDF5 file.
 
         Args:
@@ -871,6 +895,8 @@ class rhdLoader:
             channel_map: Channel map array saved alongside the data.
             fname: Filename for the HDF5 container to create in the subject
                 directory.
+            missing_channels: Optional 0-indexed channels with no amplifier
+                data (also included in ``bad_channels`` when saved).
 
         Returns:
             True if the HDF5 file was written successfully, False otherwise.
@@ -883,6 +909,9 @@ class rhdLoader:
                 hf.create_dataset('fs', data=fs)
                 hf.create_dataset('bad_channels', data=bad_channels)
                 hf.create_dataset('channel_map', data=channel_map)
+                if missing_channels is not None:
+                    hf.create_dataset('missing_channels',
+                                      data=list(missing_channels))
             logger.info('...raw data saved successfully.')
             return True
         except Exception as e:

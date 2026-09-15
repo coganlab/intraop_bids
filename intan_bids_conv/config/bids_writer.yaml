@@ -1,5 +1,7 @@
 subject: ???
 # subject: S85
+# Use a BIDS-compliant label. Run suffixes (e.g. S84a, S84b) are supported;
+# RHD files and recon anatomy are resolved from the base ID (S84).
 
 task: lexical
 # task: phoneme
@@ -35,8 +37,8 @@ use_ext_mic: false
 
 # Sequence of 0-indexed channel numbers that are missing from the data.
 # If None, all channels are assumed to be present. Missing channels are set
-# to NaN in the returned data. Default is None.
-# missing_data_idx: null
-# missing_data_idx_type: list
-missing_data_idx: [0, 63]
-missing_data_idx_type: range
+# to NaN in the HDF5 data and marked bad in channels.tsv during BIDS export.
+missing_data_idx: null
+missing_data_idx_type: list
+# missing_data_idx: [0, 63]
+# missing_data_idx_type: range

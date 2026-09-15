@@ -149,6 +149,8 @@ def phon_txt2df(txt_path, trial_type, subject, n_phons, fs, task):
 
 def _parse_missing_data_idx(missing_data_idx, type = 'list'):
     """Parse the missing data index from the configuration."""
+    if missing_data_idx is None:
+        return None
     if type == 'list' and isinstance(missing_data_idx, list):
         return missing_data_idx
     elif type == 'range':
@@ -158,6 +160,11 @@ def _parse_missing_data_idx(missing_data_idx, type = 'list'):
             return list(range(missing_data_idx[0], missing_data_idx[-1] + 1))
     else:
         raise ValueError(f"Invalid missing data index type: {type}")
+
+try:
+    from subject_utils import base_subject_id
+except ImportError:
+    from .subject_utils import base_subject_id
 
 # ---------------------------------------------------------------------------
 # BIDSConverter
@@ -185,6 +192,7 @@ class BIDSConverter:
         recon_path: Optional[Union[str, Path]] = None,
     ):
         self.subject = subject
+        self.recon_subject = base_subject_id(subject)
         self.task = task
         self.source_path = Path(source_path)
         self.recon_path = Path(recon_path)
@@ -253,13 +261,24 @@ class BIDSConverter:
             sfreq=self.fs,
             ch_types='ecog',
         )
+        bad_channel_indices = {int(ch) for ch in raw['bad_channels'][()]}
+        if 'missing_channels' in raw:
+            bad_channel_indices.update(int(ch) for ch in raw['missing_channels'][()])
+        non_finite_channels = np.where(~np.all(np.isfinite(raw_data), axis=1))[0]
+        bad_channel_indices.update(int(ch) for ch in non_finite_channels)
         info['bads'] = [
-            self._ch_index_to_name.get(int(ch), str(ch))
-            for ch in raw['bad_channels'][()]
+            self._ch_index_to_name.get(ch, str(ch))
+            for ch in sorted(bad_channel_indices)
         ]
+        if non_finite_channels.size:
+            logger.info(
+                'Replacing non-finite placeholder samples with 0 in %d '
+                'channel(s) marked bad for BIDS export.',
+                non_finite_channels.size,
+            )
         raw.close()
 
-        raw_data = raw_data.astype(np.float32)
+        raw_data = np.where(np.isfinite(raw_data), raw_data, 0.0).astype(np.float32)
         raw = mne.io.RawArray(data=raw_data * 1e-6, info=info)
         del raw_data
         import gc
@@ -316,9 +335,9 @@ class BIDSConverter:
         """Add a montage using the subject RAS file, falling back to a synthetic grid."""
         ras_file = os.path.join(
             self.recon_path,
-            f"{self.subject}",
+            self.recon_subject,
             "elec_recon",
-            f"{self.subject}_elec_locations_RAS_brainshifted.txt",
+            f"{self.recon_subject}_elec_locations_RAS_brainshifted.txt",
         )
 
         if not os.path.exists(ras_file):
@@ -761,8 +780,8 @@ class BIDSConverter:
     def _convert_anat_to_bids(self, overwrite=True, verbose=True):
         """Locate T1w/CT sources and write to ``anat/`` with placeholder sidecars."""
         possible_dirs = [
-            self.recon_path / self.subject / 'elec_recon',
-            self.recon_path / self.subject / 'mri',
+            self.recon_path / self.recon_subject / 'elec_recon',
+            self.recon_path / self.recon_subject / 'mri',
         ]
 
         subject_anat_source_dir = None
@@ -777,7 +796,7 @@ class BIDSConverter:
             if verbose:
                 print(
                     f"Could not find anatomical directory for subject "
-                    f"{self.subject} in any of: "
+                    f"{self.recon_subject} in any of: "
                     f"{[str(d) for d in possible_dirs]}"
                 )
             return
@@ -809,7 +828,7 @@ class BIDSConverter:
         else:
             import nibabel as nib
             subject_anat_source_dir = (
-                self.recon_path / self.subject / 'mri'
+                self.recon_path / self.recon_subject / 'mri'
             )
             native_mgz = subject_anat_source_dir / 'native.mgz'
             temp_file = None
@@ -1210,10 +1229,10 @@ def main(cfg: DictConfig) -> None:
 
     # standard data loading pipeline
     loader.load_data(use_ext_mic=cfg.use_ext_mic)
-    loader.make_cue_events(
-        use_ext_trigger=cfg.use_ext_trigger, use_ext_mic=cfg.use_ext_mic,
-    )
-    loader.run_mfa(task_name=TASK2MFA[task], denoise_mic=(not cfg.use_ext_mic))
+    # loader.make_cue_events(
+    #     use_ext_trigger=cfg.use_ext_trigger, use_ext_mic=cfg.use_ext_mic,
+    # )
+    # loader.run_mfa(task_name=TASK2MFA[task], denoise_mic=(not cfg.use_ext_mic))
 
     # # update impedance and bad channels
     # loader.update_impedance()
