@@ -1,0 +1,44 @@
+subject: ???
+# subject: S85
+# Use a BIDS-compliant label. Run suffixes (e.g. S84a, S84b) are supported;
+# RHD files and recon anatomy are resolved from the base ID (S84).
+
+task: lexical
+# task: phoneme
+
+# Directory containing RHD source data and the trialInfo file from the
+# task computer.  If null, a directory-selection dialog is opened.
+source_path: null
+# source_path: ~/path/to/rhd/data
+
+# Inclusive 1-indexed start/end of the contiguous RHD file range to
+# process when ordered alphabetically (e.g. [5, 10] for files 5–10).
+fileIDs: null
+# fileIDs: [2, None]
+
+# Electrode array channel map (128-strip, 256-grid, 256-strip,
+# 1024-grid, hybrid-strip).  If null, the user is prompted interactively.
+array_type: null
+# array_type: 256-strip
+
+# Number of identical arrays used.  When > 1 the channel map is
+# vertically stacked with offset channel indices for each copy.
+num_arrays: 1
+
+# Parent directory containing subject anatomical subdirectories.
+recon_path: ~/Box/ECoG_Recon 
+
+# Use external trigger onsets instead of calculating from RHD data.
+use_ext_trigger: false
+# Use sub-{subject}_micExt.wav instead of the RHD microphone for
+# allblocks.wav during load_data(). Denoising for cue-event alignment is
+# skipped automatically when use_ext_mic is true.
+use_ext_mic: false
+
+# Sequence of 0-indexed channel numbers that are missing from the data.
+# If None, all channels are assumed to be present. Missing channels are set
+# to NaN in the HDF5 data and marked bad in channels.tsv during BIDS export.
+missing_data_idx: null
+missing_data_idx_type: list
+# missing_data_idx: [0, 63]
+# missing_data_idx_type: range

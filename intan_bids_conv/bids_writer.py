@@ -25,12 +25,14 @@ import re
 from pathlib import Path
 from typing import Optional, Union
 
+import hydra
 import h5py
 import mne
 import numpy as np
 import os
 import pandas as pd
 from mne_bids import BIDSPath, write_raw_bids, write_anat
+from omegaconf import DictConfig, OmegaConf
 
 logger = logging.getLogger(__name__)
 
@@ -100,7 +102,7 @@ def remove_arpabet_stress(phoneme: str) -> str:
     return re.sub(r'\d', '', phoneme)
 
 
-def remove_orphan_stimuli(events_df, response_window_sec=4.0):
+def remove_orphan_stimuli(events_df, response_window_sec=3.0):
     """Drop stimulus rows that lack a matching response within *response_window_sec*."""
     base_types = events_df['trial_type'].str.split('/').str[0]
     is_stim = base_types == 'stimulus'
@@ -145,6 +147,25 @@ def phon_txt2df(txt_path, trial_type, subject, n_phons, fs, task):
     return df[EVENTS_COL_ORDER]
 
 
+def _parse_missing_data_idx(missing_data_idx, type = 'list'):
+    """Parse the missing data index from the configuration."""
+    if missing_data_idx is None:
+        return None
+    if type == 'list' and isinstance(missing_data_idx, list):
+        return missing_data_idx
+    elif type == 'range':
+        if isinstance(missing_data_idx, range):
+            return list(missing_data_idx)
+        else:
+            return list(range(missing_data_idx[0], missing_data_idx[-1] + 1))
+    else:
+        raise ValueError(f"Invalid missing data index type: {type}")
+
+try:
+    from subject_utils import base_subject_id
+except ImportError:
+    from .subject_utils import base_subject_id
+
 # ---------------------------------------------------------------------------
 # BIDSConverter
 # ---------------------------------------------------------------------------
@@ -171,6 +192,7 @@ class BIDSConverter:
         recon_path: Optional[Union[str, Path]] = None,
     ):
         self.subject = subject
+        self.recon_subject = base_subject_id(subject)
         self.task = task
         self.source_path = Path(source_path)
         self.recon_path = Path(recon_path)
@@ -239,13 +261,24 @@ class BIDSConverter:
             sfreq=self.fs,
             ch_types='ecog',
         )
+        bad_channel_indices = {int(ch) for ch in raw['bad_channels'][()]}
+        if 'missing_channels' in raw:
+            bad_channel_indices.update(int(ch) for ch in raw['missing_channels'][()])
+        non_finite_channels = np.where(~np.all(np.isfinite(raw_data), axis=1))[0]
+        bad_channel_indices.update(int(ch) for ch in non_finite_channels)
         info['bads'] = [
-            self._ch_index_to_name.get(int(ch), str(ch))
-            for ch in raw['bad_channels'][()]
+            self._ch_index_to_name.get(ch, str(ch))
+            for ch in sorted(bad_channel_indices)
         ]
+        if non_finite_channels.size:
+            logger.info(
+                'Replacing non-finite placeholder samples with 0 in %d '
+                'channel(s) marked bad for BIDS export.',
+                non_finite_channels.size,
+            )
         raw.close()
 
-        raw_data = raw_data.astype(np.float32)
+        raw_data = np.where(np.isfinite(raw_data), raw_data, 0.0).astype(np.float32)
         raw = mne.io.RawArray(data=raw_data * 1e-6, info=info)
         del raw_data
         import gc
@@ -302,9 +335,9 @@ class BIDSConverter:
         """Add a montage using the subject RAS file, falling back to a synthetic grid."""
         ras_file = os.path.join(
             self.recon_path,
-            f"{self.subject}",
+            self.recon_subject,
             "elec_recon",
-            f"{self.subject}_elec_locations_RAS_brainshifted.txt",
+            f"{self.recon_subject}_elec_locations_RAS_brainshifted.txt",
         )
 
         if not os.path.exists(ras_file):
@@ -747,8 +780,8 @@ class BIDSConverter:
     def _convert_anat_to_bids(self, overwrite=True, verbose=True):
         """Locate T1w/CT sources and write to ``anat/`` with placeholder sidecars."""
         possible_dirs = [
-            self.recon_path / self.subject / 'elec_recon',
-            self.recon_path / self.subject / 'mri',
+            self.recon_path / self.recon_subject / 'elec_recon',
+            self.recon_path / self.recon_subject / 'mri',
         ]
 
         subject_anat_source_dir = None
@@ -763,7 +796,7 @@ class BIDSConverter:
             if verbose:
                 print(
                     f"Could not find anatomical directory for subject "
-                    f"{self.subject} in any of: "
+                    f"{self.recon_subject} in any of: "
                     f"{[str(d) for d in possible_dirs]}"
                 )
             return
@@ -795,7 +828,7 @@ class BIDSConverter:
         else:
             import nibabel as nib
             subject_anat_source_dir = (
-                self.recon_path / self.subject / 'mri'
+                self.recon_path / self.recon_subject / 'mri'
             )
             native_mgz = subject_anat_source_dir / 'native.mgz'
             temp_file = None
@@ -817,6 +850,9 @@ class BIDSConverter:
             finally:
                 if temp_file is not None and temp_file.exists():
                     temp_file.unlink()
+
+        # flip CT orientation upside down
+        
 
         # --- CT ---
         ct_source_file = subject_anat_source_dir / 'postimpRaw.nii.gz'
@@ -1146,20 +1182,37 @@ class BIDSConverter:
 # CLI entry point
 # ---------------------------------------------------------------------------
 
-def main(
-    source_path: Path,
-    subject: str,
-    task: str,
-    fileIDs: Optional[tuple] = None,
-    array_type: Optional[str] = None,
-    num_arrays: int = 1,
-    recon_path: Optional[Path] = None,
-):
+@hydra.main(version_base=None, config_path='config',
+            config_name='bids_writer')
+def main(cfg: DictConfig) -> None:
     """Run the full Intan RHD -> BIDS conversion pipeline."""
+    missing_keys = OmegaConf.missing_keys(cfg)
+    if missing_keys:
+        raise RuntimeError(f'Missing configuration keys: {missing_keys}')
+
+    logger.info(f'Running with configuration:\n{OmegaConf.to_yaml(cfg)}')
+
     try:
         from dataloaders import rhdLoader
     except ImportError:
         from .dataloaders import rhdLoader
+
+    subject = cfg.subject
+    task = cfg.task
+    source_path = (
+        Path(cfg.source_path).expanduser()
+        if cfg.source_path is not None else None
+    )
+    recon_path = (
+        Path(cfg.recon_path).expanduser()
+        if cfg.recon_path is not None else None
+    )
+    
+    fileIDs = tuple(cfg.fileIDs) if cfg.fileIDs is not None else None
+    array_type = cfg.array_type
+    num_arrays = int(cfg.num_arrays)
+
+    missing_data_idx = _parse_missing_data_idx(cfg.missing_data_idx, cfg.missing_data_idx_type)
 
     if task == 'lexical':
         bids_root = Path.home() / 'Box' / 'CoganLab' / 'BIDS_1.0_Lexical_\u00b5ECoG' / 'BIDS'
@@ -1170,16 +1223,19 @@ def main(
 
     loader = rhdLoader(
         subject, source_path, fileIDs=fileIDs, array_type=array_type,
-        num_arrays=num_arrays,
+        num_arrays=num_arrays, 
+        missing_data_idx=missing_data_idx,
     )
 
-    # # standard data loading pipeline
-    # loader.load_data()
-    # loader.make_cue_events()
-    # loader.run_mfa(task_name=TASK2MFA[task])
+    # standard data loading pipeline
+    loader.load_data(use_ext_mic=cfg.use_ext_mic)
+    # loader.make_cue_events(
+    #     use_ext_trigger=cfg.use_ext_trigger, use_ext_mic=cfg.use_ext_mic,
+    # )
+    # loader.run_mfa(task_name=TASK2MFA[task], denoise_mic=(not cfg.use_ext_mic))
 
-    # update impedance and bad channels
-    loader.update_impedance() 
+    # # update impedance and bad channels
+    # loader.update_impedance()
 
     bids_converter = BIDSConverter(
         source_path=loader.out_dir,
@@ -1194,71 +1250,5 @@ def main(
     # bids_converter.update_bids_channel_names()
 
 
-if __name__ == "__main__":
-    import argparse
-
-    parser = argparse.ArgumentParser()
-
-    parser.add_argument(
-        "--source-path",
-        default=None,
-        help=(
-            'Directory containing the RHD source data files. If not provided, '
-            'the user will be prompted to select a directory via GUI. This '
-            'directory should also contain the trialInfo file from the task '
-            'computer.'
-        ),
-    )
-    parser.add_argument(
-        "--subject",
-        default=None,
-        help='Subject identifier (e.g., S41)',
-    )
-    parser.add_argument(
-        "--fileIDs",
-        nargs=2,
-        type=int,
-        default=None,
-        metavar=('START', 'END'),
-        help=(
-            'Inclusive start and end (1-indexed) of the contiguous range of '
-            'RHD files to process when ordered alphabetically in the source '
-            'data directory (e.g. for the 5th through 10th files, use '
-            '--fileIDs 5 10)'
-        ),
-    )
-    parser.add_argument(
-        "--array-type",
-        default=None,
-        help=(
-            'Type of electrode array '
-            '(128-strip, 256-grid, 256-strip, 1024-grid, hybrid-strip)'
-        ),
-    )
-    parser.add_argument(
-        "--num-arrays",
-        type=int,
-        default=1,
-        help=(
-            'Number of identical arrays used (default: 1). '
-            'When > 1, the channel map is vertically stacked with '
-            'offset channel indices for each copy.'
-        ),
-    )
-    parser.add_argument(
-        "--recon-path",
-        default=Path.home() / "Box" / "ECoG_Recon",
-        type=Path,
-        help=(
-            'Parent directory containing subject anatomical subdirectories '
-            '(e.g., ECoG_Recon/)'
-        ),
-    )
-    parser.add_argument(
-        "--task",
-        default="lexical",
-        help='Name of the task (default: lexical)',
-    )
-
-    args = parser.parse_args()
-    main(**vars(args))
+if __name__ == '__main__':
+    main()
