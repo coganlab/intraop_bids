@@ -50,8 +50,135 @@ def get_n_phons(subject, ps_subjects):
     return 5
 
 
+def load_dataset(pt, bids_root, phoneme_idx, tw, nan_bad_chans=True,
+                 n_phons=None, ps_subjects=None, ps_root=None, **kwargs):
+    # if pt[0].lower() == 'd':
+    #     return load_seeg_dataset(pt, bids_root, 'seq', tw,
+    #                                 nan_bad_chans=nan_bad_chans, **kwargs)
+    # else:
+    #     return load_align_data(bids_root, pt, phoneme_idx, tw=tw, **kwargs)
+    
+    # can use uECoG data processing now that phoneme level sEEG is available
+    return load_align_data(bids_root, pt, phoneme_idx, tw=tw, n_phons=n_phons,
+                           nan_bad_chans=nan_bad_chans, ps_subjects=ps_subjects,
+                           ps_root=ps_root, **kwargs)
+
+
+def load_seeg_dataset(pt, bids_root, align_label_method, tw,
+                      nan_bad_chans=False, **kwargs):
+    """Load word-level sEEG epochs in the same format as ``load_bids_dataset``.
+
+    sEEG epochs are word-level (one epoch per spoken word, already aligned to
+    response onset), in contrast to the phoneme-level uECoG epochs. To match
+    the seq2seq input/output contract of ``load_bids_dataset`` we therefore:
+
+    * return ``X`` aligned to response onset (the word epoch as-is), and
+    * return ``y`` marking every phoneme in the word (not just P1), converted
+      to the shared ARPAbet id space (``TARGET_EVENT_ID``) by tokenizing the
+      word codeword (``Word/Response/LS/uga`` -> ``uga`` -> ``['u','g','a']``
+      -> ``['UH','G','AA']`` -> ids).
+
+    Args:
+        pt (str): sEEG subject id.
+        bids_root: BIDS derivatives root passed to ``PhonemeDatasetBIDS``.
+        align_label_method (str): one of ``seq2seq``/``seq``/``P1``/``indiv``.
+        tw (list): decode time window ``[tmin, tmax]``.
+
+    Returns:
+        tuple: ``(X, y, y_align, tw_align)`` where ``X`` is
+        ``(n_trials, n_times, n_channels)``, ``y`` is
+        ``(n_trials, seq_length)`` integer phoneme labels, and ``y_align`` is
+        the alignment-label array for ``align_label_method``, and ``tw_align`` is
+        the time window of the aligned data.
+    """
+    # Word-level load: one response-aligned epoch per word. phonemeIdx=1 with
+    # nPhons=1 keeps every trial (a single event per word) rather than slicing
+    # a phoneme position as in the phoneme-level uECoG case.
+    dataset = PhonemeDatasetBIDS(bids_root, pt, phonemeIdx=1, nPhons=1, tw=tw,
+                                 nan_bad_chans=nan_bad_chans,
+                                 **kwargs)
+    X, y_codes = dataset.get_data()      # X: (trials, channels, time)
+    X = X.transpose(0, 2, 1)             # -> (trials, time, channels)
+
+    # Map each word event code -> full phoneme sequence in the target ARPA id
+    # space, so y marks every phoneme (matching load_bids_dataset's y).
+    code2seq = {}
+    for code, label in dataset.label_dict.items():
+        codeword = label.split('/')[-1]
+        arpa = [PS2ARPA.get(t, t) for t in _tokenize_codeword(codeword)]
+        code2seq[int(code)] = [TARGET_EVENT_ID[a] for a in arpa]
+
+    seqs = [code2seq[int(c)] for c in y_codes]
+    seq_lens = {len(s) for s in seqs}
+    if len(seq_lens) > 1:
+        raise ValueError(
+            f"sEEG patient {pt} has words of differing phoneme-sequence "
+            f"lengths {sorted(seq_lens)}; the seq2seq model requires a single "
+            f"shared sequence length.")
+    y = np.array(seqs)[:,0]                   # (trials, 1)
+
+    y_align = _seeg_alignment_labels(align_label_method, y)
+
+    # NOTE: NaNs (bad channels/trials) are intentionally left in place here and
+    # imputed per-fold in setup_fold, matching load_bids_dataset.
+
+    return X, y, y_align, dataset.twEpoch
+
+
+def _tokenize_codeword(word):
+    """Greedy longest-match split of a phoneme-sequence codeword.
+
+    sEEG word codewords (e.g. ``uga``, ``aeba``) are orthographic
+    concatenations of the phoneme-sequence tokens in ``PS2ARPA``. Tokens are
+    tried longest-first so digraphs like ``ae`` match before ``a``.
+
+    Returns:
+        list[str]: PS tokens (e.g. ``['u', 'g', 'a']``).
+    """
+    tokens = sorted(PS2ARPA.keys(), key=lambda s: (-len(s), s))
+    out, i, n = [], 0, len(word)
+    while i < n:
+        for t in tokens:
+            if word.startswith(t, i):
+                out.append(t)
+                i += len(t)
+                break
+        else:
+            raise ValueError(
+                f"Cannot tokenize codeword {word!r} at index {i} "
+                f"(remaining {word[i:]!r}); unknown phoneme code")
+    return out
+
+
+def _seeg_alignment_labels(method, y):
+    """Alignment labels for word-level sEEG, mirroring ``get_alignment_labels``.
+
+    ``y`` is the ``(n_trials, nPhons)`` phoneme-sequence label array. Because
+    sEEG has a single (word-level) trial per word, the per-word sequence is the
+    natural alignment key; there are no per-phoneme trials to expand as in the
+    uECoG loader.
+
+    Args:
+        method (str): one of ``seq2seq``/``seq``/``P1``/``indiv``.
+        y (ndarray): ``(n_trials, nPhons)`` phoneme-sequence labels.
+
+    Returns:
+        ndarray: alignment labels aligned to ``X``'s ``n_trials``.
+    """
+    assert method in ['seq2seq', 'seq', 'P1', 'indiv']
+    if method in ('seq2seq', 'seq'):
+        # align by the full per-word phoneme sequence
+        return y
+    elif method == 'P1':
+        # align by the first phoneme only
+        return y[:, 0]
+    else:  # indiv
+        return np.array(y).squeeze()
+
+
 def load_subject_data(bids_root, subject, phoneme_idx, n_phons=3,
-                      tw=None, ps_root=None, ps_subjects=None, **kwargs):
+                      tw=None, ps_root=None, ps_subjects=None,
+                      nan_bad_chans=True, **kwargs):
     """Load epoched data for a single subject, remapping labels to a common
     phoneme set."""
     if tw is None:
@@ -62,6 +189,7 @@ def load_subject_data(bids_root, subject, phoneme_idx, n_phons=3,
         logger.info(f'Loading PS data for {subject} from {bids_root}')
 
     dataset = PhonemeDatasetBIDS(bids_root, subject, phoneme_idx, n_phons, tw,
+                                 nan_bad_chans=nan_bad_chans,
                                  **kwargs)
     X, y = dataset.get_data()
 
@@ -72,13 +200,16 @@ def load_subject_data(bids_root, subject, phoneme_idx, n_phons=3,
     return X, y, dataset.twEpoch
 
 
-def load_align_data(bids_root, subject, phoneme_idx, tw=None,
-                    ps_root=None, ps_subjects=None, **kwargs):
+def load_align_data(bids_root, subject, phoneme_idx, tw=None, nan_bad_chans=True,
+                    ps_root=None, ps_subjects=None, n_phons=None, **kwargs):
     """Load subject data and compute alignment labels (phoneme-1 labels)."""
-    n_phons = get_n_phons(subject, ps_subjects or [])
+
+    if n_phons is None:
+        n_phons = get_n_phons(subject, ps_subjects or [])
     X, y, tw_epoch = load_subject_data(
         bids_root, subject, phoneme_idx, n_phons, tw,
-        ps_root=ps_root, ps_subjects=ps_subjects, **kwargs)
+        ps_root=ps_root, ps_subjects=ps_subjects, nan_bad_chans=nan_bad_chans,
+        **kwargs)
     X = X.transpose(0, 2, 1)
 
     _, y_align, _ = load_subject_data(
@@ -95,9 +226,12 @@ def load_cross_data(bids_root, subjects, phoneme_idx, tw=None,
     """Load data for all cross-patient subjects."""
     X_list, y_list, y_align_list = [], [], []
     for subj in subjects:
-        X, y, y_align, _ = load_align_data(
-            bids_root, subj, phoneme_idx, tw,
-            ps_root=ps_root, ps_subjects=ps_subjects, **kwargs)
+        # X, y, y_align, _ = load_align_data(
+        #     bids_root, subj, phoneme_idx, tw,
+        #     ps_root=ps_root, ps_subjects=ps_subjects, **kwargs)
+        X, y, y_align, _ = load_dataset(
+            subj, bids_root, phoneme_idx, tw, ps_root=ps_root,
+            ps_subjects=ps_subjects, **kwargs)
         X_list.append(X)
         y_list.append(y)
         y_align_list.append(y_align)
@@ -230,7 +364,7 @@ def build_output_path(cfg, tw_epoch, decode_tw, other_subjects, results_root):
 
 
 @hydra.main(version_base=None, config_path="config",
-            config_name="decode_crosspt_phonemes")
+            config_name="decode_crossPt_phonemes")
 def main(cfg: DictConfig) -> None:
     missing_keys = OmegaConf.missing_keys(cfg)
     if missing_keys:
@@ -253,11 +387,14 @@ def main(cfg: DictConfig) -> None:
 
     # Load target patient data
     logger.info(f'Loading target data for {cfg.patient}...')
-    X_tar, y_tar, y_align_tar, tw_epoch = load_align_data(
-        bids_root, cfg.patient, cfg.phoneme_idx, tw,
-        ps_root=str(ps_root), ps_subjects=ps_subjects, **bids_kwargs)
+    # X_tar, y_tar, y_align_tar, tw_epoch = load_align_data(
+    #     bids_root, cfg.patient, cfg.phoneme_idx, tw,
+    #     ps_root=str(ps_root), ps_subjects=ps_subjects, **bids_kwargs)
+    X_tar, y_tar, y_align_tar, tw_epoch = load_dataset(
+        cfg.patient, bids_root, cfg.phoneme_idx, tw,
+        **bids_kwargs)
     logger.info(f'Target data: X={X_tar.shape}, y={y_tar.shape}, '
-                f'tw={tw_epoch}')
+                f'y_align={y_align_tar.shape}, tw={tw_epoch}')
 
     # Determine which other subjects to pool
     pool_task = cfg.pool_task.lower()
@@ -277,6 +414,9 @@ def main(cfg: DictConfig) -> None:
     X_src, y_src, y_align_src = load_cross_data(
         bids_root, other_subjects, cfg.phoneme_idx, tw,
         ps_root=str(ps_root), ps_subjects=ps_subjects, **bids_kwargs)
+    for X_cross, y_cross, y_align_cross in zip(X_src, y_src, y_align_src):
+        logger.info(f'Cross-patient data: X={X_cross.shape}, y={y_cross.shape},'
+                    f' y_align={y_align_cross.shape}')
 
     # Build model
     imputer = NaNImputer3D()

@@ -8,8 +8,8 @@ task: ???
 # task: "phoneme"
 
 phoneme_idx: -1    # -1 for all phonemes, 1..N for specific position
-n_phons: 5
-# n_phons: 3
+# n_phons: 5
+n_phons: 3
 
 # BIDS file matching
 description: productionMeanSub
