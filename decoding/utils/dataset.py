@@ -98,25 +98,26 @@ class PhonemeDatasetBIDS:
     """
 
     def __init__(self, bidsRoot, subject, phonemeIdx, nPhons=3,
-                 tw=None, **kwargs):
+                 tw=None, nan_bad_chans=False, **kwargs):
         self.bidsRoot = Path(bidsRoot)
         self.subject = subject
         self.phonemeIdx = 'all' if phonemeIdx == -1 else phonemeIdx
         self.nPhons = nPhons
         self.tw = tw if tw is not None else [None, None]
-
+        self.nan_bad_chans = nan_bad_chans
+        
         suffix = kwargs.pop('suffix', None)
         self.suffixes = _normalize_suffixes(suffix) if suffix is not None \
             else [None]
         self.n_bands = len(self.suffixes)
         self._bids_kwargs = kwargs
 
-        self.data, self.labels = self._load_data()
+        self.data, self.labels = self._load_data(nan_bad_chans=nan_bad_chans)
 
     def get_data(self):
         return self.data, self.labels
 
-    def _load_one_band(self, sfx):
+    def _load_one_band(self, sfx, nan_bad_chans=False):
         bids_path = BIDSPath(
             root=self.bidsRoot,
             subject=self.subject,
@@ -124,14 +125,28 @@ class PhonemeDatasetBIDS:
             suffix=sfx,
             **self._bids_kwargs,
         )
+        
         try:
             data_path = bids_path.match()[0]
         except IndexError:
             raise FileNotFoundError(
-                f'No matching file found for {bids_path}')
-        return read_epochs(data_path, preload=True)
+                f'No matching file found for {bids_path}'
+            )
 
-    def _load_data(self):
+        epochs = read_epochs(data_path, preload=True)
+
+        if nan_bad_chans:
+            bad_chans = epochs.info['bads'].copy()
+
+            bad_mask = np.isin(epochs.ch_names, bad_chans)
+
+            # Data shape: (epochs, channels, timepoints)
+            # Replace bad channels with NaNs in place. _data will exist bc preload=True
+            epochs._data[:, bad_mask, :] = np.nan
+
+        return epochs
+
+    def _load_data(self, nan_bad_chans=False):
         feats_per_band = []
         labels_ref = None
         ch_names_ref = None
@@ -139,7 +154,7 @@ class PhonemeDatasetBIDS:
         label_dict_ref = None
 
         for band_idx, sfx in enumerate(self.suffixes):
-            data = self._load_one_band(sfx)
+            data = self._load_one_band(sfx, nan_bad_chans)
             t_data = data.times
 
             if band_idx == 0:
