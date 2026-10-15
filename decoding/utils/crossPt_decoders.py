@@ -3,6 +3,7 @@
 Author: Zac Spalding
 """
 
+import warnings
 import numpy as np
 from sklearn.base import BaseEstimator
 from sklearn.decomposition import PCA
@@ -252,6 +253,10 @@ class crossPtDecoder_twSepAlign(crossPtDecoder):
 
         cache = {}
         for i, (X, y, y_align) in enumerate(self.cross_pt_data):
+            # impute nans in data with channel means
+            fill_values = compute_channel_means(X)
+            X = impute_nans(X, fill_values)
+
             t_data = self.get_time_range(X.shape[1])
             align_idx = self.get_time_idx(t_data, self.tw_align)
 
@@ -273,6 +278,10 @@ class crossPtDecoder_twSepAlign(crossPtDecoder):
     def preprocess_train(self, X, y):
         cache = self.build_cross_patient_cache()
         cross_pt_trials = [x.shape[0] for x, _, _ in self.cross_pt_data]
+
+        # impute nans in data with channel means
+        self.fill_values = compute_channel_means(X)
+        X = impute_nans(X, self.fill_values)
 
         t_data = self.get_time_range(X.shape[1])
         align_idx = self.get_time_idx(t_data, self.tw_align)
@@ -299,8 +308,11 @@ class crossPtDecoder_twSepAlign(crossPtDecoder):
 
         X_algn_dr = []
         for (i, info), algn in zip(cache.items(), self.algns):
-            X_r = self.cross_pt_data[i][0][:, decode_idx, :].reshape(
-                -1, self.cross_pt_data[i][0].shape[-1])
+            X_src = self.cross_pt_data[i][0].copy()
+            fill_values_src = compute_channel_means(X_src)
+            X_src = impute_nans(X_src, fill_values_src)
+
+            X_r = X_src[:, decode_idx, :].reshape(-1, X_src.shape[-1])
             X_dr = info["pca"].transform(X_r)
             X_dr = X_dr.reshape(cross_pt_trials[i], -1, X_dr.shape[-1])
 
@@ -308,16 +320,26 @@ class crossPtDecoder_twSepAlign(crossPtDecoder):
 
         X_tar_dr = X_tar_dr.reshape(X_tar_dr.shape[0], -1)
 
+        # print(y.shape)
+        # print([info["y"].shape for info in cache.values()])
+
         if self.tar_in_train:
             X_pool = np.vstack([X_tar_dr] + X_algn_dr)
+
+            # y_pool = np.vstack([y] + [info["y"] for info in cache.values()])
             y_pool = np.hstack([y] + [info["y"] for info in cache.values()])
         else:
             X_pool = np.vstack(X_algn_dr)
+
+            # y_pool = np.vstack([y] + [info["y"] for info in cache.values()])
             y_pool = np.hstack([info["y"] for info in cache.values()])
 
         return X_pool, y_pool
 
     def preprocess_test(self, X):
+        # imput test nans with training means
+        X = impute_nans(X, self.fill_values)
+
         t_data = self.get_time_range(X.shape[1])
         decode_idx = self.get_time_idx(t_data, self.tw_decode)
         X_r = X[:, decode_idx, :].reshape(-1, X.shape[-1])
@@ -335,3 +357,66 @@ class crossPtDecoder_twSepAlign(crossPtDecoder):
 
     def set_align_labels(self, y_align):
         self.y_align = y_align
+
+
+def compute_channel_means(X, fill_value=0.0):
+    """Compute the per-channel mean waveform for NaN imputation, ignoring NaNs.
+
+    Mirrors ``NaNImputer3D`` from the SVM decoding pipeline: the fill value is
+    the mean across trials at each (timepoint, channel), preserving the
+    average temporal response rather than collapsing to a single scalar per
+    channel. Intended to be fit on the training split only so the same
+    statistics can be applied to val/test without leakage (see
+    ``impute_nans``).
+
+    Channel-timepoints that are entirely NaN (e.g. fully bad channels) have no
+    valid mean and are assigned ``fill_value`` -- 0 is a neutral choice for
+    the mean-subtracted high-gamma features and contributes nothing through
+    the linear read-in. (This 0-fallback is an addition over the SVM
+    imputer, which leaves fully-NaN channels as NaN; it is required here so
+    PCA/CCA do not choke on bad channels.)
+
+    Args:
+        X (ndarray): Neural data with shape (n_trials, n_times, n_channels).
+        fill_value (float): Value used where no valid samples exist.
+
+    Returns:
+        ndarray: Mean waveform of shape (n_times, n_channels).
+    """
+    with warnings.catch_warnings():
+        # fully-NaN channels trigger a "Mean of empty slice" RuntimeWarning
+        warnings.simplefilter('ignore', category=RuntimeWarning)
+        means = np.nanmean(X, axis=0)  # mean over trials -> (n_times, n_channels)
+    return np.where(np.isnan(means), fill_value, means)
+
+
+def impute_nans(X, fill_values):
+    """Impute NaNs (bad channels/trials) with a provided mean waveform.
+
+    Bad channels and bad trials are stored as NaN in the updated BIDS data.
+    PCA, CCA alignment, and the network cannot handle NaNs, so they are
+    replaced here. Each NaN is filled with the corresponding (timepoint,
+    channel) value in ``fill_values`` (typically the training-split mean
+    waveform from ``compute_channel_means``), so applying this to val/test
+    data introduces no leakage.
+
+    Args:
+        X (ndarray): Neural data with shape (n_trials, n_times, n_channels).
+        fill_values (ndarray): Mean waveform of shape (n_times, n_channels)
+            broadcast across trials to fill NaNs.
+
+    Returns:
+        ndarray: Data with NaNs imputed (same shape as input).
+    """
+    if not np.isnan(X).any():
+        return X
+
+    if np.issubdtype(X.dtype, np.floating):
+        X = X.copy()
+    else:
+        X = X.astype(np.float32)
+
+    nan_mask = np.isnan(X)
+    fills = np.broadcast_to(fill_values, X.shape)
+    X[nan_mask] = fills[nan_mask]
+    return X
