@@ -316,9 +316,11 @@ class crossPtDecoder_twSepAlign(crossPtDecoder):
             X_dr = info["pca"].transform(X_r)
             X_dr = X_dr.reshape(cross_pt_trials[i], -1, X_dr.shape[-1])
 
-            X_algn_dr.append(algn.transform(X_dr).reshape(X_dr.shape[0], -1))
+            X_algn_dr.append(algn.transform(X_dr))
+            # X_algn_dr.append(algn.transform(X_dr).reshape(X_dr.shape[0], -1))
 
-        X_tar_dr = X_tar_dr.reshape(X_tar_dr.shape[0], -1)
+        
+        # X_tar_dr = X_tar_dr.reshape(X_tar_dr.shape[0], -1)
 
         # print(y.shape)
         # print([info["y"].shape for info in cache.values()])
@@ -359,35 +361,34 @@ class crossPtDecoder_twSepAlign(crossPtDecoder):
         self.y_align = y_align
 
 
-def compute_channel_means(X, fill_value=0.0):
-    """Compute the per-channel mean waveform for NaN imputation, ignoring NaNs.
+def compute_channel_means(X):
+    """Compute the per-channel mean waveform for NaN imputation.
 
-    Mirrors ``NaNImputer3D`` from the SVM decoding pipeline: the fill value is
-    the mean across trials at each (timepoint, channel), preserving the
-    average temporal response rather than collapsing to a single scalar per
-    channel. Intended to be fit on the training split only so the same
-    statistics can be applied to val/test without leakage (see
-    ``impute_nans``).
-
-    Channel-timepoints that are entirely NaN (e.g. fully bad channels) have no
-    valid mean and are assigned ``fill_value`` -- 0 is a neutral choice for
-    the mean-subtracted high-gamma features and contributes nothing through
-    the linear read-in. (This 0-fallback is an addition over the SVM
-    imputer, which leaves fully-NaN channels as NaN; it is required here so
-    PCA/CCA do not choke on bad channels.)
+    Assumes input data is shaped (n_trials, n_times, n_channels). Channel means
+    are computed by averaging across trials. For bad channels (all NaN), the
+    time-varying mean across all good channels is used. For time points where
+    all channels are NaN, the global mean across all channels and trials is
+    used.
 
     Args:
         X (ndarray): Neural data with shape (n_trials, n_times, n_channels).
-        fill_value (float): Value used where no valid samples exist.
 
     Returns:
         ndarray: Mean waveform of shape (n_times, n_channels).
     """
     with warnings.catch_warnings():
-        # fully-NaN channels trigger a "Mean of empty slice" RuntimeWarning
         warnings.simplefilter('ignore', category=RuntimeWarning)
-        means = np.nanmean(X, axis=0)  # mean over trials -> (n_times, n_channels)
-    return np.where(np.isnan(means), fill_value, means)
+        channel_means = np.nanmean(X, axis=0)  # mean over trials -> (n_times, n_channels)
+        time_mean = np.nanmean(channel_means, axis=1)  # mean over channels -> (n_times,)
+        global_mean = np.nanmean(X)  # mean over all trials, times, channels -> scalar
+
+        # replace all-nan timepoints with the global mean (e.g. fully-NaN channels)
+        time_mean = np.where(np.isnan(time_mean), global_mean, time_mean)
+
+        # replace all-nan channels with the time-varying mean across channels
+        means = np.where(np.isnan(channel_means), time_mean[:, None], channel_means)
+
+    return means
 
 
 def impute_nans(X, fill_values):

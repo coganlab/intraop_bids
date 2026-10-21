@@ -1,6 +1,7 @@
 import json
 import h5py
 import numpy as np
+import warnings
 from tqdm import tqdm
 from sklearn.base import BaseEstimator, TransformerMixin
 from sklearn.model_selection import cross_val_predict, StratifiedKFold, KFold
@@ -11,8 +12,9 @@ class NaNImputer3D(BaseEstimator, TransformerMixin):
     """Impute NaN values in 3D epoch arrays using per-channel training means.
 
     During ``fit``, computes the mean waveform for each channel across
-    non-NaN training trials.  During ``transform``, replaces any
-    trial-channel slice that contains NaN with the fitted channel mean.
+    non-NaN training trials.  During ``transform``, replaces NaNs with the
+    fitted channel mean.  Channel/time positions that are NaN for every
+    training trial are filled with the mean value of good channels.
 
     Parameters
     ----------
@@ -26,9 +28,38 @@ class NaNImputer3D(BaseEstimator, TransformerMixin):
         self.noise_scale = noise_scale
 
     def fit(self, X, y=None):
-        self.fill_values_ = np.nanmean(X, axis=0)
+        print(X.shape)
+        # Mean waveform across training trials
+        channel_means = np.nanmean(X, axis=0)  # (channels, time)
+
+        # Time-varying mean across channels
+        time_mean = np.nanmean(channel_means, axis=0)  # (time,)
+
+        # Handle time points where every channel is missing
+        global_mean = np.nanmean(X)
+        time_mean = np.where(np.isnan(time_mean), global_mean, time_mean)
+
+        # Fill any missing channel/time means using the time-varying mean
+        self.fill_values_ = np.where(
+            np.isnan(channel_means),
+            time_mean[None, :],
+            channel_means,
+        )
+
         if self.noise_scale > 0:
-            self.fill_stds_ = np.nanstd(X, axis=0)
+            channel_stds = np.nanstd(X, axis=0)
+            time_std = np.nanstd(channel_stds, axis=0)
+            global_std = np.nanstd(X)
+
+            # Avoid NaN noise scales at completely missing positions
+            time_std = np.where(np.isnan(time_std), global_std, time_std)
+            self.fill_stds_ = np.where(
+                np.isnan(channel_stds),
+                time_std[None, :],
+                channel_stds,
+            )
+            self.fill_stds_ = np.nan_to_num(self.fill_stds_)
+
         return self
 
     def transform(self, X, y=None):
