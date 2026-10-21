@@ -50,7 +50,8 @@ def plot_subj(subj: str, subj_dir: PathLike[str] = SUBJECTS_DIR,
     if fig is None:
         # Default to creating a new figure
         # (plotting on existing figure useful for multiple subjects on avg)
-        fig = Brain(subj, subjects_dir=subj_dir, surf=surface, hemi='both',
+        recon_subj = subj[0] + subj[1:].lstrip('0')  # remove leading zeros for recon-all subject
+        fig = Brain(recon_subj, subjects_dir=subj_dir, surf=surface, hemi='both',
                     units=units, **brain_kwargs)
 
     # Get default electrode positions and sizes
@@ -139,6 +140,8 @@ def _plot_elecs_on_brain(fig: Brain, coords: ArrayLike,
     group is ``scale_factor * size``, i.e. the ``scale_factor`` kwarg acts as a
     base scale that the per-electrode ``size`` column modulates.
     """
+    micro_scale = kwargs.pop('micro_scale_factor', 1.0)
+
     coords = np.asarray(coords, dtype=float)
 
     # Without per-electrode sizes, fall back to a single scalar scale_factor
@@ -151,7 +154,6 @@ def _plot_elecs_on_brain(fig: Brain, coords: ArrayLike,
 
     sizes = np.asarray(sizes, dtype=float)
     base_scale = kwargs.pop('scale_factor', 1.0)
-    micro_scale = kwargs.pop('micro_scale_factor', 1.0)
 
     # Draw one group of foci per distinct size so each gets its own scale
     for size in np.unique(sizes):
@@ -227,6 +229,7 @@ def _resolve_subj_colors(subjs: list[str],
 
 def plot_subjs_on_avg(subjs: list[str], subj_dir: PathLike[str] = SUBJECTS_DIR,
                       bids_root: PathLike[str] = BIDS_ROOT,
+                      picks: dict[str, list[str | int]] | None = None,
                       avg_subj: str = 'cvs_avg35_inMNI152',
                       method: str = 'spherical',
                       surface: str = 'pial',
@@ -247,6 +250,8 @@ def plot_subjs_on_avg(subjs: list[str], subj_dir: PathLike[str] = SUBJECTS_DIR,
     the same color to every subject and overrides ``subj_cmap``.
     """
     subj_dir = Path(subj_dir)
+
+    avg_subj = avg_subj[0] + avg_subj[1:].lstrip('0')
 
     if avg_subj not in ['fsaverage', 'cvs_avg35_inMNI152']:
         raise ValueError(f'Invalid average subject: {avg_subj}')
@@ -274,12 +279,20 @@ def plot_subjs_on_avg(subjs: list[str], subj_dir: PathLike[str] = SUBJECTS_DIR,
                      if use_subj_colors else None)
 
     for subj in subjs:
-        elec_pos = _get_elec_pos(subj, bids_root)
+        recon_subj = subj[0] + subj[1:].lstrip('0')  # remove leading zeros for recon-all subject
+
+        if picks is not None:
+            subj_picks = picks.get(subj, None)
+        else:
+            subj_picks = None
+
+        elec_pos = _get_elec_pos(subj, bids_root, picks=subj_picks)
         avg_elec_pos = avg_fun(
-            elec_pos, subj, avg_subj, subj_dir, **sph_kwargs)
+            elec_pos, recon_subj, avg_subj, subj_dir, **sph_kwargs)
         subj_elec_kwargs = dict(elec_kwargs)
         if subj_colors is not None:
             subj_elec_kwargs['color'] = subj_colors[subj]
+        
         fig = plot_subj(subj, subj_dir, bids_root, elec_pos=avg_elec_pos,
                         fig=fig, elec_kwargs=subj_elec_kwargs,
                         brain_kwargs=brain_kwargs, units=units)
@@ -675,7 +688,8 @@ def _calc_avg_tal(elec_pos: ArrayLike, subj: str, avg_subj: str,
     # use talairach transform to transform electrode positions to average brain
     tal_subj = read_talxfm(subj, subjs_dir)
     tal_avg = read_talxfm(avg_subj, subjs_dir)
-    xform = tal_avg @ np.linalg.inv(tal_subj)
+    # xform = tal_avg @ np.linalg.inv(tal_subj)
+    xform = np.dot(np.linalg.pinv(tal_avg), tal_subj)
     elec_pox_xform = transform_coords(elec_pos, xform)
 
     if surface is not None: # project to average brain surface
