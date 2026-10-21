@@ -20,7 +20,7 @@
 # nPhons=3
 # task="phoneme"
 
-subj_arr=("D0095")
+# subj_arr=("D0095")
 # subj_arr=("D0019" "D0022" "D0023" "D0024" "D0025" "D0028" "D0029" "D0031" "D0035"
 #           "D0040" "D0041" "D0042" "D0045" "D0049" "D0052" "D0053" "D0054" "D0055"
 #           "D0056" "D0057" "D0058" "D0059" "D0060" "D0061" "D0063" "D0064" "D0066"
@@ -35,6 +35,7 @@ subj_arr=("D0023" "D0024" "D0025" "D0028" "D0029" "D0031" "D0035" "D0040" "D0041
           "D0102" "D0103")
 # bids_root="/hpc/home/zms14/cworkspace/BIDS-1.4_Phoneme_sequencing/BIDS/derivatives/epoch(CAR)"
 bids_root="/hpc/home/zms14/cworkspace/BIDS-1.4_Phoneme_sequencing/BIDS/derivatives/epoch(phonemeLevel)(CAR)"
+# bids_root="/hpc/home/zms14/cworkspace/BIDS-1.4_Phoneme_sequencing/BIDS/derivatives/epoch(phonemeLevel)(bipolar)"
 phonemeIdx=(-1 1 2 3)
 # phonemeIdx=(1)
 # phonemeIdx=(-1)
@@ -48,8 +49,8 @@ chance=false
 twMin=-0.5
 twMax=0.5
 
-# datatype="epoch(band)(power)(sig)"
-datatype="epoch(band)(power)"
+datatype="epoch(band)(power)(sig)"
+# datatype="epoch(band)(power)"
 
 task_periods=("perception" "production")
 # task_periods=("production")

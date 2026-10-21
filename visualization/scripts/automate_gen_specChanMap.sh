@@ -6,7 +6,7 @@
 
 bids_root="~/cworkspace/BIDS_1.0_Lexical_µECoG/BIDS"
 task="lexical"
-subj_arr=("S86")
+subj_arr=("S84a" "S84b")
 # subj_arr=("S30" "S41" "S45" "S47" "S51" "S52" "S53" "S55" "S56" "S63" "S67" "S73" "S74" "S75" "S76" "S78" "S81" "S83")
 # subj_arr=("S30" "S41" "S45" "S47" "S51" "S52" "S53" "S55" "S56" "S63" "S67" "S73" "S74" "S75" "S76" "S78" "S81")
 # subj_arr=("S41" "S45" "S47")
@@ -17,8 +17,8 @@ task_period="[perception,production]"
 # task_period="perception"
 # task_period="production"
 
-# recompute="true"
-recompute="false"
+recompute="true"
+# recompute="false"
 
 for subject in "${subj_arr[@]}"; do
     echo "----------------------------------------"

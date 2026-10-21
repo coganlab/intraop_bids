@@ -3,7 +3,7 @@
 #SBATCH -e /hpc/home/zms14/cworkspace/jobs/specChanMap/%j.error
 #SBATCH -p common,scavenger
 #SBATCH -c 25
-#SBATCH --mem=64G
+#SBATCH --mem=128G
 
 # ----------------------------
 # Load environment
