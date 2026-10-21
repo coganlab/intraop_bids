@@ -50,16 +50,18 @@ def get_n_phons(subject, ps_subjects):
     return 5
 
 
-def load_dataset(pt, bids_root, phoneme_idx, tw, nan_bad_chans=True,
-                 n_phons=None, ps_subjects=None, ps_root=None, **kwargs):
+def load_dataset(pt, bids_root, phoneme_idx, tw, elec_rois=None,
+                 nan_bad_chans=True, n_phons=None, ps_subjects=None,
+                 ps_root=None, **kwargs):
     # if pt[0].lower() == 'd':
     #     return load_seeg_dataset(pt, bids_root, 'seq', tw,
     #                                 nan_bad_chans=nan_bad_chans, **kwargs)
     # else:
     #     return load_align_data(bids_root, pt, phoneme_idx, tw=tw, **kwargs)
-    
+
     # can use uECoG data processing now that phoneme level sEEG is available
     return load_align_data(bids_root, pt, phoneme_idx, tw=tw, n_phons=n_phons,
+                           elec_rois=elec_rois,
                            nan_bad_chans=nan_bad_chans, ps_subjects=ps_subjects,
                            ps_root=ps_root, **kwargs)
 
@@ -178,7 +180,7 @@ def _seeg_alignment_labels(method, y):
 
 def load_subject_data(bids_root, subject, phoneme_idx, n_phons=3,
                       tw=None, ps_root=None, ps_subjects=None,
-                      nan_bad_chans=True, **kwargs):
+                      nan_bad_chans=True, elec_rois=None, **kwargs):
     """Load epoched data for a single subject, remapping labels to a common
     phoneme set."""
     if tw is None:
@@ -189,8 +191,8 @@ def load_subject_data(bids_root, subject, phoneme_idx, n_phons=3,
         logger.info(f'Loading PS data for {subject} from {bids_root}')
 
     dataset = PhonemeDatasetBIDS(bids_root, subject, phoneme_idx, n_phons, tw,
-                                 nan_bad_chans=nan_bad_chans,
-                                 **kwargs)
+                                 elec_roi=elec_rois,
+                                 nan_bad_chans=nan_bad_chans, **kwargs)
     X, y = dataset.get_data()
 
     label_phons = [dataset.label_dict[lab] for lab in y]
@@ -200,14 +202,15 @@ def load_subject_data(bids_root, subject, phoneme_idx, n_phons=3,
     return X, y, dataset.twEpoch
 
 
-def load_align_data(bids_root, subject, phoneme_idx, tw=None, nan_bad_chans=True,
-                    ps_root=None, ps_subjects=None, n_phons=None, **kwargs):
+def load_align_data(bids_root, subject, phoneme_idx, tw=None, elec_rois=None,
+                    nan_bad_chans=True, ps_root=None, ps_subjects=None,
+                    n_phons=None, **kwargs):
     """Load subject data and compute alignment labels (phoneme-1 labels)."""
 
     if n_phons is None:
         n_phons = get_n_phons(subject, ps_subjects or [])
     X, y, tw_epoch = load_subject_data(
-        bids_root, subject, phoneme_idx, n_phons, tw,
+        bids_root, subject, phoneme_idx, n_phons, tw, elec_rois=elec_rois,
         ps_root=ps_root, ps_subjects=ps_subjects, nan_bad_chans=nan_bad_chans,
         **kwargs)
     X = X.transpose(0, 2, 1)
@@ -222,16 +225,20 @@ def load_align_data(bids_root, subject, phoneme_idx, tw=None, nan_bad_chans=True
 
 
 def load_cross_data(bids_root, subjects, phoneme_idx, tw=None,
-                    ps_root=None, ps_subjects=None, **kwargs):
+                    ps_root=None, ps_subjects=None, elec_rois=None, **kwargs):
     """Load data for all cross-patient subjects."""
     X_list, y_list, y_align_list = [], [], []
     for subj in subjects:
+        print(f"Loading cross-patient data for subject {subj}...")
         # X, y, y_align, _ = load_align_data(
         #     bids_root, subj, phoneme_idx, tw,
         #     ps_root=ps_root, ps_subjects=ps_subjects, **kwargs)
         X, y, y_align, _ = load_dataset(
             subj, bids_root, phoneme_idx, tw, ps_root=ps_root,
-            ps_subjects=ps_subjects, **kwargs)
+            ps_subjects=ps_subjects, elec_rois=elec_rois, **kwargs)
+        if 0 in X.shape:
+            print(f"Warning: No data found for subject {subj}. Skipping.")
+            continue
         X_list.append(X)
         y_list.append(y)
         y_align_list.append(y_align)
@@ -320,7 +327,8 @@ def aligned_decode(X_tar, y_tar, y_align_tar=None, aligner=None,
     return scores, y_pred_all
 
 
-def build_output_path(cfg, tw_epoch, decode_tw, other_subjects, results_root):
+def build_output_path(cfg, tw_epoch, decode_tw, other_subjects, results_root,
+                      output_suffix=None):
     """Construct a BIDSPath for saving cross-patient decoding results."""
     description = cfg.description
     phase = ('Perception' if 'perception' in description.lower()
@@ -346,16 +354,16 @@ def build_output_path(cfg, tw_epoch, decode_tw, other_subjects, results_root):
 
     band = format_band_str(cfg.suffix)
 
+    desc = (f"{band}({phase})({norm_type})(alignTW{tw_str(tw_epoch)})"
+            f"(decTW{tw_str(decode_tw)})({sig_str}Channel)(pts[{pt_str}])")
+    if output_suffix is not None:
+            desc += f"({output_suffix})"
     outpath = BIDSPath(
         root=results_root,
         subject=cfg.patient,
         task=cfg.task,
         datatype='decode(production)(cca)(crossPatientTask)',
-        description=(f"{band}({phase})({norm_type})"
-                     f"(alignTW{tw_str(tw_epoch)})"
-                     f"(decTW{tw_str(decode_tw)})"
-                     f"({sig_str}Channel)"
-                     f"(pts[{pt_str}])"),
+        description=desc,
         suffix=phoneme_suffix,
         extension='.h5',
         check=False,
@@ -385,13 +393,23 @@ def main(cfg: DictConfig) -> None:
         description=cfg.description, suffix=cfg.suffix,
         extension=cfg.extension, task=cfg.task, datatype=cfg.datatype)
 
+    # get cortical rois on both hemispheres
+    rois = cfg.rois
+    if rois is not None:
+        rois = {
+            f"ctx_{hemi}_{region}"
+            for hemi in ("lh", "rh")
+            for region in rois
+        }
+        print(f"Using ROIs: {rois}")
+
     # Load target patient data
     logger.info(f'Loading target data for {cfg.patient}...')
     # X_tar, y_tar, y_align_tar, tw_epoch = load_align_data(
     #     bids_root, cfg.patient, cfg.phoneme_idx, tw,
     #     ps_root=str(ps_root), ps_subjects=ps_subjects, **bids_kwargs)
     X_tar, y_tar, y_align_tar, tw_epoch = load_dataset(
-        cfg.patient, bids_root, cfg.phoneme_idx, tw,
+        cfg.patient, bids_root, cfg.phoneme_idx, tw, elec_rois=rois,
         **bids_kwargs)
     logger.info(f'Target data: X={X_tar.shape}, y={y_tar.shape}, '
                 f'y_align={y_align_tar.shape}, tw={tw_epoch}')
@@ -412,7 +430,7 @@ def main(cfg: DictConfig) -> None:
 
     logger.info(f'Loading cross-patient data for {other_subjects}...')
     X_src, y_src, y_align_src = load_cross_data(
-        bids_root, other_subjects, cfg.phoneme_idx, tw,
+        bids_root, other_subjects, cfg.phoneme_idx, tw, elec_rois=rois,
         ps_root=str(ps_root), ps_subjects=ps_subjects, **bids_kwargs)
     for X_cross, y_cross, y_align_cross in zip(X_src, y_src, y_align_src):
         logger.info(f'Cross-patient data: X={X_cross.shape}, y={y_cross.shape},'
@@ -448,7 +466,7 @@ def main(cfg: DictConfig) -> None:
         results_root = bids_root.parent / 'decoding'
 
     outpath = build_output_path(cfg, tw_epoch, decode_tw, other_subjects,
-                                results_root)
+                                results_root, cfg.output_suffix)
     outpath.mkdir(exist_ok=True)
     logger.info(f'Saving results to {outpath.fpath}')
     decode_handler.save_results(outpath.fpath, overwrite=True)
