@@ -11,8 +11,8 @@ reference: CAR
 subjects_dir: ~/cworkspace/ECoG_Recon
 
 # Template brain for average-space projection.
-# Uses spherical surface registration (sphere-outer.reg) instead of
-# Talairach affine, which avoids distortion for micro-ECoG grids.
+# Uses standard pial spherical registration (sphere.reg) with outer-smoothed
+# surface indexing, which avoids sulcus splitting for micro-ECoG grids.
 average: cvs_avg35_inMNI152
 
 task_periods:
