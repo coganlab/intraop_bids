@@ -7,7 +7,7 @@
 
 bids_root="~/cworkspace/BIDS_1.0_Lexical_µECoG/BIDS"
 task="lexical"
-subj_arr=("S86")
+subj_arr=("S84a" "S84b")
 # subj_arr=("S30" "S82" "S83")
 # subj_arr=("S41" "S45" "S47" "S51" "S52" "S53" "S55" "S56" "S63" "S67" "S73" "S74" "S75" "S76" "S78" "S81")
 # subj_arr=("S41" "S45" "S47" "S51" "S52" "S53" "S55" "S56" "S63" "S67" "S73" "S74" "S75" "S76" "S78" "S81")
@@ -19,15 +19,15 @@ features="[high_gamma,spike_band]"
 # features="[high_gamma]"
 # features="[spike_band]"
 # features="[delta,theta,alpha,beta,low_gamma]"
-# task_period="[perception,production]"
+task_period="[perception,production]"
 # task_period="perception"
-task_period="production"
+# task_period="production"
 
 useSig=true  # leave this lower case
 # useSig=false  # leave this lower case
 
-# phonemeLevel=true  # leave this lower case
-phonemeLevel=false  # leave this lower case
+phonemeLevel=true  # leave this lower case
+# phonemeLevel=false  # leave this lower case
 
 # Spatial-average mode: when spatialAvg=true, this script submits one job
 # per contact size in spatialAvgContactSizes; each job loads the matching
