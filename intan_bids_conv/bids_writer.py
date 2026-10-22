@@ -39,12 +39,19 @@ logger = logging.getLogger(__name__)
 TASK2MFA = {
     "lexical": "lexical_repeat_intraop",
     "phoneme": "phoneme_sequencing",
+    "sentence": "sentence_repeat_intraop",
 }
 
-NPHONS = {
-    "lexical": 5,
-    "phoneme": 3,
+TASK2MFA_DICT = {
+    "lexical": "english_us_lr",
+    "phoneme": "english_us_ps",
+    "sentence": "english_us_arpa",
 }
+
+# NPHONS = {
+#     "lexical": 5,
+#     "phoneme": 3,
+# }
 
 PS2ARPA = {
     'a': 'AA', 'ae': 'EH', 'i': 'IY', 'u': 'UW', 'b': 'B', 'p': 'P',
@@ -125,26 +132,49 @@ def remove_orphan_stimuli(events_df, response_window_sec=3.0):
     return events_df[~orphan_mask].reset_index(drop=True)
 
 
-def phon_txt2df(txt_path, trial_type, subject, n_phons, fs, task):
+def phon_txt2df(txt_path, trial_type, subject, n_phons_per_trial, fs, task):
     """Convert a phoneme-level MFA text file to a BIDS events DataFrame."""
     df = pd.read_csv(txt_path, sep='\t', names=['onset', 'offset', 'phoneme'])
     df['duration'] = df['offset'] - df['onset']
 
-    if task == 'lexical':
-        df['value'] = df['phoneme'].apply(remove_arpabet_stress)
+    if task == 'phoneme':
+        df['value'] = df['phoneme'].apply(lambda x: PS2ARPA.get(x, x))
     else:
-        df['value'] = df['phoneme'].apply(
-            lambda x: PS2ARPA.get(
-                remove_arpabet_stress(x), remove_arpabet_stress(x)
-            )
-        )
+        df['value'] = df['phoneme']
+    df['phoneme'] = df['phoneme'].apply(remove_arpabet_stress)
 
     df['subject'] = subject
     df['sample'] = (df['onset'] * fs).astype(int)
-    df['trial'] = (np.arange(len(df)) // n_phons) + 1
-    position = (np.arange(len(df)) % n_phons) + 1
-    df['trial_type'] = [f'{trial_type}/{p}' for p in position]
+    # df['trial'] = (np.arange(len(df)) // n_phons) + 1
+    # position = (np.arange(len(df)) % n_phons) + 1
+    # df['trial_type'] = [f'{trial_type}/{p}' for p in position]
+
+    trial_nums, position_num = phons2trials(len(df), n_phons_per_trial)
+    df['trial'] = trial_nums
+    df['trial_type'] = [f'{trial_type}/{p}' for p in position_num]
+    
     return df[EVENTS_COL_ORDER]
+
+
+def phons2trials(n_phons_total, n_phons_per_trial):
+    """Convert the total number of phonemes across all trials (number of 
+    phonemes may vary by trial) to trial numbers and position within trial."""
+    trial_nums = []
+    position_num = []
+    current_trial = 1
+    current_position = 1
+
+    for i in range(n_phons_total):
+        trial_nums.append(current_trial)
+        position_num.append(current_position)
+
+        if current_position == n_phons_per_trial:
+            current_trial += 1
+            current_position = 1
+        else:
+            current_position += 1
+
+    return trial_nums, position_num
 
 
 def _parse_missing_data_idx(missing_data_idx, type = 'list'):
@@ -165,6 +195,67 @@ try:
     from subject_utils import base_subject_id
 except ImportError:
     from .subject_utils import base_subject_id
+
+
+def get_words_per_trial(trial_info_path: Union[str, Path]) -> list[int]:
+    """Get the number of words in each trial from the trial info file."""
+    if not os.path.exists(trial_info_file):
+        raise FileNotFoundError(f"Trial info file not found: {trial_info_file}")
+    trial_info = sio.loadmat(trial_info_path)['trialInfo'][0,:]
+    
+    words_per_trial = []
+    for tr in range(len(trial_info)):
+        # format changes depending on task
+        try:
+            curr_words = trial_info[tr]['sound'][0,0]['name'][0,0][0]
+        except IndexError:
+            curr_words = trial_info[tr]['sound'][0,0][0]
+
+        # separates hyphenated words to list of words and removes extension
+        curr_words = curr_words.split('_')[-1].split('.')[0]
+
+        # put single words in list to match sentence format
+        if isinstance(curr_words, str):
+            curr_words = [curr_words]
+
+        words_per_trial.append(curr_words)
+
+    return words_per_trial
+
+
+def get_n_phons(words_per_trial: list, dict_name: str) -> list[int]:
+    """ Get the number of phonemes in each word using the MFA pronunciation dictionary"""
+    pron_dict = load_mfa_dictionary(dict_name)
+
+    # number of phonemes per trial is the sum of the number of phonemes in each word in that trial
+    n_phons_per_trial = [sum(len(pron_dict[word]) for word in trial_words) for trial_words in words_per_trial]
+
+    return n_phons_per_trial
+
+
+def load_mfa_dictionary(name):
+    """ Loads MFA pronunciation dictionary from MFA pretrained models dir"""
+    path = DictionaryModel.get_pretrained_path(name)
+
+    if path is None:
+        raise ValueError(f"MFA dictionary '{name}' was not found.")
+
+    dictionary = {}
+
+    with open(path, "r") as f:
+        for line in f:
+            line = line.strip()
+
+            if not line or line.startswith("#"):
+                continue
+
+            parts = line.split()
+            word = parts[0]
+            phones = [p for p in parts[1:] if not p.replace('.', '').isnumeric()]
+
+            dictionary[word] = phones
+
+    return dictionary
 
 # ---------------------------------------------------------------------------
 # BIDSConverter
@@ -569,16 +660,20 @@ class BIDSConverter:
             logger.error(f"Response phoneme file not found in {subj_dir}")
             raise FileNotFoundError(f"Response phoneme file not found in {subj_dir}")
 
+        resp_word_file = [subj_dir / 'mfa_adj_resp_words.txt', subj_dir / 'mfa_resp_words.txt']
+        words_per_trial = get_words_per_trial(trial_info_file)
+
         sfreq = self.raw.info['sfreq']
-        n_phons = NPHONS.get(self.task, 5)
+        # n_phons = NPHONS.get(self.task, 5)
+        n_phons_per_trial = get_n_phons(words_per_trial, TASK2MFA_DICT.get(self.task, 'english_us_arpa'))
 
         stim_df = phon_txt2df(
             stim_fname, 'stimulus', self.subject,
-            n_phons, sfreq, self.task,
+            n_phons_per_trial, sfreq, self.task,
         )
         resp_df = phon_txt2df(
             resp_fname, 'response', self.subject,
-            n_phons, sfreq, self.task,
+            n_phons_per_trial, sfreq, self.task,
         )
 
         events_df = (
@@ -587,9 +682,15 @@ class BIDSConverter:
             .reset_index(drop=True)
         )
         events_df = remove_orphan_stimuli(events_df)
+        # events_df['trial'] = np.ceil(
+        #     np.arange(1, len(events_df) + 1) / (n_phons * 2)
+        # ).astype(int)
+
+        # Create trial numbers again, but now events are across both
+        # stimulus and response so there are double the phonemes per trial.
         events_df['trial'] = np.ceil(
-            np.arange(1, len(events_df) + 1) / (n_phons * 2)
-        ).astype(int)
+            phons2trials(len(events_df), n_phons_per_trial*2)[0]
+        )
 
         events_path = BIDSPath(
             root=self.bids_root / 'derivatives' / 'phonemeLevel',
@@ -1218,20 +1319,22 @@ def main(cfg: DictConfig) -> None:
         bids_root = Path.home() / 'Box' / 'CoganLab' / 'BIDS_1.0_Lexical_\u00b5ECoG' / 'BIDS'
     elif task == 'phoneme':
         bids_root = Path.home() / 'Box' / 'CoganLab' / 'BIDS_1.0_Phoneme_Sequence_uECoG' / 'BIDS'
+    elif task == 'sentence':
+        bids_root = Path.home() / 'Box' / 'CoganLab' / 'BIDS_1.0_Sentence_\u00b5ECoG' / 'BIDS'
     else:
         raise ValueError(f'Invalid task: {task}')
 
     loader = rhdLoader(
         subject, source_path, fileIDs=fileIDs, array_type=array_type,
-        num_arrays=num_arrays, 
+        num_arrays=num_arrays,
         missing_data_idx=missing_data_idx,
     )
 
     # standard data loading pipeline
     loader.load_data(use_ext_mic=cfg.use_ext_mic)
-    # loader.make_cue_events(
-    #     use_ext_trigger=cfg.use_ext_trigger, use_ext_mic=cfg.use_ext_mic,
-    # )
+    loader.make_cue_events(
+        use_ext_trigger=cfg.use_ext_trigger, use_ext_mic=cfg.use_ext_mic,
+    )
     # loader.run_mfa(task_name=TASK2MFA[task], denoise_mic=(not cfg.use_ext_mic))
 
     # # update impedance and bad channels
