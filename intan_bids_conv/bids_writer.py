@@ -29,6 +29,7 @@ import hydra
 import h5py
 import mne
 import numpy as np
+import scipy.io as sio
 import os
 import pandas as pd
 from mne_bids import BIDSPath, write_raw_bids, write_anat
@@ -199,8 +200,8 @@ except ImportError:
 
 def get_words_per_trial(trial_info_path: Union[str, Path]) -> list[int]:
     """Get the number of words in each trial from the trial info file."""
-    if not os.path.exists(trial_info_file):
-        raise FileNotFoundError(f"Trial info file not found: {trial_info_file}")
+    if not os.path.exists(trial_info_path):
+        raise FileNotFoundError(f"Trial info file not found: {trial_info_path}")
     trial_info = sio.loadmat(trial_info_path)['trialInfo'][0,:]
     
     words_per_trial = []
@@ -660,7 +661,7 @@ class BIDSConverter:
             logger.error(f"Response phoneme file not found in {subj_dir}")
             raise FileNotFoundError(f"Response phoneme file not found in {subj_dir}")
 
-        resp_word_file = [subj_dir / 'mfa_adj_resp_words.txt', subj_dir / 'mfa_resp_words.txt']
+        trial_info_file = subj_dir / 'trialInfo.mat'
         words_per_trial = get_words_per_trial(trial_info_file)
 
         sfreq = self.raw.info['sfreq']
