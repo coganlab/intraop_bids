@@ -32,6 +32,7 @@ import numpy as np
 import scipy.io as sio
 import os
 import pandas as pd
+from montreal_forced_aligner.models import DictionaryModel
 from mne_bids import BIDSPath, write_raw_bids, write_anat
 from omegaconf import DictConfig, OmegaConf
 
@@ -47,6 +48,12 @@ TASK2MFA_DICT = {
     "lexical": "english_us_lr",
     "phoneme": "english_us_ps",
     "sentence": "english_us_arpa",
+}
+
+TASK_RESP_WINS = {
+    "lexical": 3.0,
+    "phoneme": 3.0,
+    "sentence": 5.5,
 }
 
 # NPHONS = {
@@ -133,16 +140,15 @@ def remove_orphan_stimuli(events_df, response_window_sec=3.0):
     return events_df[~orphan_mask].reset_index(drop=True)
 
 
-def phon_txt2df(txt_path, trial_type, subject, n_phons_per_trial, fs, task):
-    """Convert a phoneme-level MFA text file to a BIDS events DataFrame."""
-    df = pd.read_csv(txt_path, sep='\t', names=['onset', 'offset', 'phoneme'])
+def subevent_txt2df(txt_path, event_type, trial_type, subject, n_items_per_trial, fs, task):
+    """Convert a sub-event MFA text file to a BIDS events DataFrame."""
+    df = pd.read_csv(txt_path, sep='\t', names=['onset', 'offset', 'value'])
     df['duration'] = df['offset'] - df['onset']
 
-    if task == 'phoneme':
-        df['value'] = df['phoneme'].apply(lambda x: PS2ARPA.get(x, x))
-    else:
-        df['value'] = df['phoneme']
-    df['phoneme'] = df['phoneme'].apply(remove_arpabet_stress)
+    if task == 'phoneme' and event_type == 'phones':
+        df['value'] = df['value'].apply(lambda x: PS2ARPA.get(x, x))
+    if event_type == 'phones':
+        df['value'] = df['value'].apply(remove_arpabet_stress)
 
     df['subject'] = subject
     df['sample'] = (df['onset'] * fs).astype(int)
@@ -150,32 +156,39 @@ def phon_txt2df(txt_path, trial_type, subject, n_phons_per_trial, fs, task):
     # position = (np.arange(len(df)) % n_phons) + 1
     # df['trial_type'] = [f'{trial_type}/{p}' for p in position]
 
-    trial_nums, position_num = phons2trials(len(df), n_phons_per_trial)
+    trial_nums, position_num = items2trials(len(df), n_items_per_trial)
     df['trial'] = trial_nums
     df['trial_type'] = [f'{trial_type}/{p}' for p in position_num]
-    
+
     return df[EVENTS_COL_ORDER]
 
 
-def phons2trials(n_phons_total, n_phons_per_trial):
-    """Convert the total number of phonemes across all trials (number of 
-    phonemes may vary by trial) to trial numbers and position within trial."""
-    trial_nums = []
-    position_num = []
-    current_trial = 1
-    current_position = 1
+def items2trials(n_items_total, n_items_per_trial):
+    """Assign trial numbers and positions to sequential annotations."""
+    n_items_per_trial = np.asarray(n_items_per_trial, dtype=int)
 
-    for i in range(n_phons_total):
-        trial_nums.append(current_trial)
-        position_num.append(current_position)
+    if np.any(n_items_per_trial < 0):
+        raise ValueError("Item counts cannot be negative.")
 
-        if current_position == n_phons_per_trial:
-            current_trial += 1
-            current_position = 1
-        else:
-            current_position += 1
+    expected = n_items_per_trial.sum()
 
-    return trial_nums, position_num
+    if n_items_total != expected:
+        raise ValueError(
+            f"Found {n_items_total} annotations, but trial counts "
+            f"sum to {expected}."
+        )
+
+    trial_nums = np.repeat(
+        np.arange(1, len(n_items_per_trial) + 1),
+        n_items_per_trial,
+    )
+
+    position_num = np.concatenate([
+        np.arange(1, n + 1)
+        for n in n_items_per_trial
+    ]) if expected else np.array([], dtype=int)
+
+    return trial_nums.tolist(), position_num.tolist()
 
 
 def _parse_missing_data_idx(missing_data_idx, type = 'list'):
@@ -213,7 +226,7 @@ def get_words_per_trial(trial_info_path: Union[str, Path]) -> list[int]:
             curr_words = trial_info[tr]['sound'][0,0][0]
 
         # separates hyphenated words to list of words and removes extension
-        curr_words = curr_words.split('_')[-1].split('.')[0]
+        curr_words = curr_words.split('_')[-1].split('.')[0].replace('-', ' ').split()
 
         # put single words in list to match sentence format
         if isinstance(curr_words, str):
@@ -224,39 +237,65 @@ def get_words_per_trial(trial_info_path: Union[str, Path]) -> list[int]:
     return words_per_trial
 
 
-def get_n_phons(words_per_trial: list, dict_name: str) -> list[int]:
-    """ Get the number of phonemes in each word using the MFA pronunciation dictionary"""
-    pron_dict = load_mfa_dictionary(dict_name)
-
-    # number of phonemes per trial is the sum of the number of phonemes in each word in that trial
-    n_phons_per_trial = [sum(len(pron_dict[word]) for word in trial_words) for trial_words in words_per_trial]
-
-    return n_phons_per_trial
+import pandas as pd
+import numpy as np
 
 
-def load_mfa_dictionary(name):
-    """ Loads MFA pronunciation dictionary from MFA pretrained models dir"""
-    path = DictionaryModel.get_pretrained_path(name)
+def get_phons_per_trial(
+    cue_events_path,
+    phones_path,
+    trial_type,
+    onset_buffer=0.02,
+    offset_buffer=0.02,
+):
+    """Count aligned phonemes per trial using cue event timestamps."""
+    cues = pd.read_csv(
+        cue_events_path,
+        sep='\t',
+        header=None,
+        names=['onset', 'offset', 'trial_id'],
+    )
 
-    if path is None:
-        raise ValueError(f"MFA dictionary '{name}' was not found.")
+    phones = pd.read_csv(
+        phones_path,
+        sep='\t',
+        header=None,
+        names=['onset', 'offset', 'phoneme'],
+    )
 
-    dictionary = {}
+    phones = phones[
+        phones['phoneme'].notna()
+        & phones['phoneme'].astype(str).str.strip().ne('')
+    ].copy()
 
-    with open(path, "r") as f:
-        for line in f:
-            line = line.strip()
+    counts = []
 
-            if not line or line.startswith("#"):
-                continue
+    for i, cue in cues.iterrows():
+        if trial_type == 'stimulus':
+            start = cue['onset'] - onset_buffer
+            end = cue['offset'] + offset_buffer
 
-            parts = line.split()
-            word = parts[0]
-            phones = [p for p in parts[1:] if not p.replace('.', '').isnumeric()]
+        elif trial_type == 'response':
+            start = cue['offset'] - onset_buffer
 
-            dictionary[word] = phones
+            if i + 1 < len(cues):
+                end = cues.iloc[i + 1]['onset'] + offset_buffer
+            else:
+                end = phones['offset'].max() + 1e-9
 
-    return dictionary
+        else:
+            raise ValueError(
+                "trial_type must be 'stimulus' or 'response'"
+            )
+
+        trial_phones = phones[
+            (phones['onset'] >= start)
+            & (phones['onset'] < end)
+        ]
+
+        counts.append(len(trial_phones))
+
+    return counts
 
 # ---------------------------------------------------------------------------
 # BIDSConverter
@@ -538,9 +577,10 @@ class BIDSConverter:
         else:
             logger.error(f"Stimulus word file not found in {subj_dir}")
             raise FileNotFoundError(f"Stimulus word file not found in {subj_dir}")
-        
+
         if stim_words is not None:
-            for row in stim_words:
+            stim_contents = self._build_trial_events_from_words(stim_words)
+            for row in stim_contents:
                     onset_sec, offset_sec, word = row[0], row[1], row[2]
                     onsets_sec.append(float(onset_sec))
                     durations_sec.append(
@@ -558,9 +598,10 @@ class BIDSConverter:
         else:
             logger.error(f"Response word file not found in {subj_dir}")
             raise FileNotFoundError(f"Response word file not found in {subj_dir}")
-        
+
         if resp_words is not None:
-            for row in resp_words:
+            resp_contents = self._build_trial_events_from_words(resp_words)
+            for row in resp_contents:
                 onset_sec, offset_sec, word = row[0], row[1], row[2]
                 onsets_sec.append(float(onset_sec))
                 durations_sec.append(
@@ -574,6 +615,37 @@ class BIDSConverter:
             description=descriptions,
             orig_time=self.raw.info.get('meas_date'),
         )
+
+    def _build_trial_events_from_words(self, word_timings):
+        """Convert word annotations to trial-level events"""
+        # get info on words in a single trial
+        trial_info_file = self.source_path / f'sub-{self.subject}' / 'trialInfo.mat'
+        words_per_trial = get_words_per_trial(trial_info_file)
+        n_words_per_trial = [len(words) for words in words_per_trial]
+
+        word_timings_pop = word_timings.copy()
+        trial_events = []
+        for i, n in enumerate(n_words_per_trial):
+            trial_rows = word_timings_pop[:n]
+            # check that expected words are present in the trial
+            trial_words = [row[2] for row in trial_rows]
+            if trial_words != words_per_trial[i]:
+                logger.warning(
+                    f"Trial {i+1} words do not match expected words. "
+                    f"Expected: {words_per_trial[i]}, Found: {trial_words}"
+                )
+                continue
+
+            # remove the words for this trial from the list for the next iteration
+            word_timings_pop = word_timings_pop[n:]
+
+            # save trial level information
+            onset = trial_rows[0][0]
+            offset = trial_rows[-1][1]
+            trial_contents = '-'.join(trial_words)
+            trial_events.append([onset, offset, trial_contents])
+
+        return trial_events
 
     # ------------------------------------------------------------------
     # Post-processing: standardise events.tsv
@@ -598,7 +670,8 @@ class BIDSConverter:
         events_df['subject'] = self.subject
 
         events_df = events_df.sort_values('onset').reset_index(drop=True)
-        events_df = remove_orphan_stimuli(events_df)
+        events_df = remove_orphan_stimuli(events_df, response_window_sec=TASK_RESP_WINS.get(self.task, 3.0))
+
         events_df['trial'] = np.ceil(
             np.arange(1, len(events_df) + 1) / 2
         ).astype(int)
@@ -612,12 +685,12 @@ class BIDSConverter:
         )
 
     # ------------------------------------------------------------------
-    # Phoneme-level derivative
+    # Sub-event derivative
     # ------------------------------------------------------------------
 
-    def _write_phoneme_derivative(self, overwrite=True, verbose=True):
+    def _write_subevent_derivative(self, event_type='phones', overwrite=True, verbose=True):
         """Copy raw data and write phoneme-level events to derivatives/phonemeLevel/.
-
+    
         The derivative folder is treated as its own BIDSLayout by downstream
         preprocessing code, so the raw data file must be present alongside
         the events.
@@ -625,14 +698,21 @@ class BIDSConverter:
         from bids import BIDSLayout
         from ieeg.io import save_derivative
 
+        if event_type == 'phones':
+            deriv_name = 'phonemeLevel'
+        elif event_type == 'words':
+            deriv_name = 'wordLevel'
+        else:
+            raise ValueError(f"Invalid event_type: {event_type}. Must be 'phones' or 'words'.")
+
         bids_layout = BIDSLayout(
             root=str(self.bids_root), derivatives=True,
         )
-        save_derivative(self.raw, bids_layout, 'phonemeLevel', overwrite)
+        save_derivative(self.raw, bids_layout, deriv_name, overwrite)
 
         if hasattr(self, '_ch_index_to_type'):
             deriv_path = BIDSPath(
-                root=self.bids_root / 'derivatives' / 'phonemeLevel',
+                root=self.bids_root / 'derivatives' / 'deriv_name',
                 subject=self.subject,
                 task=self.task,
                 datatype='ieeg',
@@ -642,64 +722,75 @@ class BIDSConverter:
             self._add_electrode_type_to_tsvs(deriv_path, verbose=verbose)
 
         subj_dir = self.source_path / f'sub-{self.subject}'
-        stim_phon_file = [subj_dir / 'mfa_adj_stim_phones.txt', subj_dir / 'mfa_stim_phones.txt']
-        resp_phon_file = [subj_dir / 'mfa_adj_resp_phones.txt', subj_dir / 'mfa_resp_phones.txt']
+        stim_item_file = [subj_dir / f'mfa_adj_stim_{event_type}.txt', subj_dir / f'mfa_stim_{event_type}.txt']
+        resp_item_file = [subj_dir / f'mfa_adj_resp_{event_type}.txt', subj_dir / f'mfa_resp_{event_type}.txt']
 
-        if stim_phon_file[0].exists():
-            stim_fname = stim_phon_file[0]
-        elif stim_phon_file[1].exists():
-            stim_fname = stim_phon_file[1]
+        if stim_item_file[0].exists():
+            stim_fname = stim_item_file[0]
+        elif stim_item_file[1].exists():
+            stim_fname = stim_item_file[1]
         else:
-            logger.error(f"Stimulus phoneme file not found in {subj_dir}")
-            raise FileNotFoundError(f"Stimulus phoneme file not found in {subj_dir}")
-        
-        if resp_phon_file[0].exists():
-            resp_fname = resp_phon_file[0]
-        elif resp_phon_file[1].exists():
-            resp_fname = resp_phon_file[1]
+            logger.error(f"Stimulus {event_type} file not found in {subj_dir}")
+            raise FileNotFoundError(f"Stimulus {event_type} file not found in {subj_dir}")
+
+        if resp_item_file[0].exists():
+            resp_fname = resp_item_file[0]
+        elif resp_item_file[1].exists():
+            resp_fname = resp_item_file[1]
         else:
-            logger.error(f"Response phoneme file not found in {subj_dir}")
-            raise FileNotFoundError(f"Response phoneme file not found in {subj_dir}")
+            logger.error(f"Response {event_type} file not found in {subj_dir}")
+            raise FileNotFoundError(f"Response {event_type} file not found in {subj_dir}")
 
         trial_info_file = subj_dir / 'trialInfo.mat'
         words_per_trial = get_words_per_trial(trial_info_file)
+        n_words_per_trial = [len(words) for words in words_per_trial]
 
         sfreq = self.raw.info['sfreq']
-        # n_phons = NPHONS.get(self.task, 5)
-        n_phons_per_trial = get_n_phons(words_per_trial, TASK2MFA_DICT.get(self.task, 'english_us_arpa'))
 
-        stim_df = phon_txt2df(
-            stim_fname, 'stimulus', self.subject,
-            n_phons_per_trial, sfreq, self.task,
+        if event_type == 'phones':
+            cue_events_path = subj_dir / 'cue_events.txt'
+            n_items_per_trial_stim = get_phons_per_trial(
+                cue_events_path,
+                stim_fname,
+                'stimulus',
+            )
+            n_items_per_trial_resp = get_phons_per_trial(
+                cue_events_path,
+                resp_fname,
+                'response',
+            )
+        else:
+            n_items_per_trial_stim = n_words_per_trial
+            n_items_per_trial_resp = n_words_per_trial
+
+        n_items_per_trial_stim = np.array(n_items_per_trial_stim)
+        n_items_per_trial_resp = np.array(n_items_per_trial_resp)
+
+        stim_df = subevent_txt2df(
+            stim_fname, event_type, 'stimulus', self.subject,
+            n_items_per_trial_stim, sfreq, self.task,
         )
-        resp_df = phon_txt2df(
-            resp_fname, 'response', self.subject,
-            n_phons_per_trial, sfreq, self.task,
+        stim_df['trial'] = items2trials(len(stim_df), n_items_per_trial_stim)[0]
+        resp_df = subevent_txt2df(
+            resp_fname, event_type, 'response', self.subject,
+            n_items_per_trial_resp, sfreq, self.task,
         )
+        resp_df['trial'] = items2trials(len(resp_df), n_items_per_trial_resp)[0]
 
         events_df = (
             pd.concat([stim_df, resp_df])
             .sort_values('onset')
             .reset_index(drop=True)
         )
-        events_df = remove_orphan_stimuli(events_df)
-        # events_df['trial'] = np.ceil(
-        #     np.arange(1, len(events_df) + 1) / (n_phons * 2)
-        # ).astype(int)
-
-        # Create trial numbers again, but now events are across both
-        # stimulus and response so there are double the phonemes per trial.
-        events_df['trial'] = np.ceil(
-            phons2trials(len(events_df), n_phons_per_trial*2)[0]
-        )
+        events_df = remove_orphan_stimuli(events_df, response_window_sec=TASK_RESP_WINS.get(self.task, 3.0))
 
         events_path = BIDSPath(
-            root=self.bids_root / 'derivatives' / 'phonemeLevel',
+            root=self.bids_root / 'derivatives' / deriv_name,
             subject=self.subject,
             task=self.task,
             datatype='ieeg',
             suffix='events',
-            description='phonemeLevel',
+            description=deriv_name,
             extension='.tsv',
             check=False,
         )
@@ -713,7 +804,7 @@ class BIDSConverter:
 
         if verbose:
             logger.info(
-                "Wrote phoneme-level events to %s", events_path.fpath,
+                "Wrote %s events to %s", deriv_name, events_path.fpath,
             )
 
     # ------------------------------------------------------------------
@@ -828,9 +919,21 @@ class BIDSConverter:
         # Standardise the auto-generated events.tsv
         self._reformat_events_tsv()
 
+        # only need word-level for sentence task, main event tsv handles
+        # word level in single-word tasks
+        if self.task == 'sentence':
+            # Write word-level derivative (raw copy + word events)
+            self._write_subevent_derivative(
+                'words',
+                overwrite=overwrite,
+                verbose=verbose,
+            )
+
         # Write phoneme-level derivative (raw copy + phoneme events)
-        self._write_phoneme_derivative(
-            overwrite=overwrite, verbose=verbose,
+        self._write_subevent_derivative(
+            'phones',
+            overwrite=overwrite,
+            verbose=verbose,
         )
 
         # Channel map derivative
@@ -1332,10 +1435,10 @@ def main(cfg: DictConfig) -> None:
     )
 
     # standard data loading pipeline
-    loader.load_data(use_ext_mic=cfg.use_ext_mic)
-    loader.make_cue_events(
-        use_ext_trigger=cfg.use_ext_trigger, use_ext_mic=cfg.use_ext_mic,
-    )
+    # loader.load_data(use_ext_mic=cfg.use_ext_mic)
+    # loader.make_cue_events(
+    #     use_ext_trigger=cfg.use_ext_trigger, use_ext_mic=cfg.use_ext_mic,
+    # )
     # loader.run_mfa(task_name=TASK2MFA[task], denoise_mic=(not cfg.use_ext_mic))
 
     # # update impedance and bad channels
