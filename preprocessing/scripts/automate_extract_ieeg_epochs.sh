@@ -24,17 +24,17 @@ features="[high_gamma,spike_band]"
 # features="[high_gamma]"
 # features="[spike_band]"
 # features="[delta,theta,alpha,beta,low_gamma]"
-task_period="[perception,production]"
+# task_period="[perception,production]"
 # task_period="perception"
-# task_period="production"
+task_period="production"
 # task_period="delay"
 
-# useSig=true  # leave this lower case
-useSig=false  # leave this lower case
+useSig=true  # leave this lower case
+# useSig=false  # leave this lower case
 sig_channels_method="tpc"
 
-# derivative_name=null
-derivative_name="phonemeLevel"
+derivative_name=null
+# derivative_name="phonemeLevel"
 # derivative_name="wordLevel"
 
 # Spatial-average mode: when spatialAvg=true, this script submits one job
