@@ -98,6 +98,7 @@ class rhdLoader:
                                  'not be implemented yet.')
         else:
             array_type = array_type.split('.')[0]
+        logger.info(f'Using array type: {array_type}')
         if num_arrays > 1:
             self.channel_map = self._build_composite_channel_map(
                 array_type, num_arrays,
@@ -245,7 +246,21 @@ class rhdLoader:
         stim_files = self._get_stim_dir().rglob('**/*.wav')
 
         # === Relevant stimuli from trial info ===
-        rel_stims = [t["sound"][0, 0][0] for t in trial_info]
+        # try:
+        #     # for sentence task with different struct
+        #     rel_stims = [t['sound'][0,0]['name'][0,0][0] for t in trial_info]
+        # except IndexError:
+        #     rel_stims = [t['sound'][0, 0][0] for t in trial_info]
+        rel_stims = []
+        for t in trial_info:
+            try:
+                # for sentence task with different struct
+                stim_name = t['sound'][0, 0]['name'][0, 0][0]
+            except IndexError:
+                stim_name = t['sound'][0, 0][0]
+            stim_name = stim_name.split('_')[-1] # remove block prefix if necessary (may need to be updated if it causes errors down the road)
+            rel_stims.append(stim_name)
+
         rel_stims_set = set(rel_stims)
         # Filter only relevant stimuli
         rel_stims_info = [(f.parent, f.name) for f in stim_files if f.name in
