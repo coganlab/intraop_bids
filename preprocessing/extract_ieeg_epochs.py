@@ -2,6 +2,7 @@ import sys
 import logging
 
 import numpy as np
+import pandas as pd
 import hydra
 from hydra.utils import instantiate
 from omegaconf import DictConfig, OmegaConf
@@ -17,8 +18,9 @@ from utils import snake2camel
 from utils.config import normalize_cfg_items
 from utils.preprocessing import (get_events, get_bad_trial_mask,
                                  preprocess_raw,
-                                 preprocess_raw_data)
-from utils.dataloaders import load_derivative_raw
+                                 preprocess_raw_data,
+                                 )
+from utils.dataloaders import load_derivative_raw, load_events_tsv
 from utils.phoneme import remap_phoneme_events
 from utils.stats import get_significant_channels
 
@@ -45,11 +47,13 @@ def _apply_nan_mask(data, good_mask):
 
 
 def calc_sig_channels(data, baseline, tw_interest=[-0.25, 0.25],
-                      tw_baseline=[-0.5, 0]):
+                      tw_baseline=[-0.5, 0], method='tpc', n_jobs=-1):
     logger.info('Calculating significant channels')
     sig_channels = get_significant_channels(data, baseline,
+                                            method=method,
                                             tw_interest=tw_interest,
-                                            tw_baseline=tw_baseline)
+                                            tw_baseline=tw_baseline,
+                                            n_jobs=n_jobs)
     logger.info(f'Found {len(sig_channels)} significant channels')
     # sig_channels = [str(int(ch)) for ch in sig_channels]
     return sig_channels
@@ -77,7 +81,8 @@ def main(cfg: DictConfig) -> None:
     # Include derivatives in the layout if we need to read from any of them.
     bids_layout = BIDSLayout(
         root=cfg.bids_root,
-        derivatives=bool(cfg.phoneme_level) or spatial_avg_enabled,
+        # derivatives=bool(cfg.phoneme_level) or spatial_avg_enabled,
+        derivatives=bool(cfg.derivative_name) or spatial_avg_enabled,
     )
 
     if spatial_avg_enabled:
@@ -144,8 +149,8 @@ def main(cfg: DictConfig) -> None:
     if spatial_avg_enabled:
         epoch_dir = (f'epoch(spatialAvgContact{int(spatial_avg_cfg.contact_size)})'
                      f'({cfg.reference})')
-    elif cfg.phoneme_level:
-        epoch_dir = f'epoch(phonemeLevel)({cfg.reference})'
+    elif cfg.derivative_name:  #TODO: update to accept derivative by name for different derivatives like word-level
+        epoch_dir = f'epoch(phonemeLevel)({cfg.derivative_name})({cfg.reference})'
     else:
         epoch_dir = f'epoch({cfg.reference})'
     outpath = BIDSPath(
@@ -177,29 +182,28 @@ def main(cfg: DictConfig) -> None:
 
     good_mask_feat = good_mask
     nPhons = 1
-    if cfg.phoneme_level:
-        logger.info('##### Phoneme-level mode: borrowing derivative events '
+    if cfg.derivative_name or spatial_avg_enabled:
+        logger.info('##### Sub-event derivative mode: borrowing derivative events '
                     '#####')
         # Load the phoneme-level derivative only to extract its annotations,
         # then transplant them onto the already-preprocessed raw. This keeps
         # the current channel structure (which may be spatial-averaged) and
         # avoids the channel mismatch that would arise from swapping in the
         # phoneme-level raw, whose channels track the original recording.
-        raw_phon = load_derivative_raw(
-            bids_layout, cfg.patient, cfg.derivative_name,
-            **OmegaConf.to_container(cfg.load_kwargs))
-        raw.set_annotations(raw_phon.annotations)
-        del raw_phon
+        events_df_deriv = load_events_tsv(bids_layout, cfg.patient, cfg.derivative_name, cfg.task)
+        stim_df_deriv = events_df_deriv[['stimulus' in x for x in events_df_deriv['trial_type']]]
+        resp_df_deriv = events_df_deriv[['response' in x for x in events_df_deriv['trial_type']]]
 
-        phon_resp_events, _ = get_events(raw, 'response')
-        phon_epochs_count = trial_ieeg(
-            raw, event=phon_resp_events, times=[0, 0.1], preload=True)
-        nPhons = len(phon_epochs_count) // n_trials_total
-        logger.info(f'Phonemes per trial: {nPhons}')
+        items_per_trial_stim = [sum(stim_df_deriv['trial'] == i) for i in stim_df_deriv['trial'].unique()]
+        items_per_trial_resp = [sum(resp_df_deriv['trial'] == i) for i in resp_df_deriv['trial'].unique()]
+        
+        logger.info(f'Stimulus items per trial: {items_per_trial_stim}')
+        logger.info(f'Response items per trial: {items_per_trial_resp}')
 
-        good_mask_feat = np.repeat(good_mask, nPhons, axis=1)
+        good_mask_feat_stim = np.repeat(good_mask, items_per_trial_stim, axis=1)
+        good_mask_feat_resp = np.repeat(good_mask, items_per_trial_resp, axis=1)
         logger.info(f'Expanded good trial mask: {good_mask.shape[1]} trials '
-                    f'-> {good_mask_feat.shape[1]} phoneme observations')
+                    f'-> {good_mask_feat_stim.shape[1]} (stim) and {good_mask_feat_resp.shape[1]} (resp) items')
 
         stim_events, _ = get_events(raw, 'stimulus')
         resp_events, _ = get_events(raw, 'response')
@@ -237,7 +241,7 @@ def main(cfg: DictConfig) -> None:
             logger.info('...extracted task features')
 
             logger.info(f'Cropping task data to {tp_cfg.feat_times[0]} to '
-                        f'{tp_cfg.feat_times[1]} ms from {tp_cfg.name} anchor '
+                        f'{tp_cfg.feat_times[1]} s from {tp_cfg.name} anchor '
                         'onset')
             base_data = base_data.crop(tmin=-0.5, tmax=0)
             feat_data = feat_data.crop(tmin=tp_cfg.feat_times[0],
@@ -249,7 +253,9 @@ def main(cfg: DictConfig) -> None:
                 base_data_sig = base_data.copy()
                 _apply_nan_mask(base_data_sig._data, good_mask)
                 sig_channels = calc_sig_channels(feat_data_sig, base_data_sig,
-                                                 tw_interest=tp_cfg.sig_times)
+                                                 tw_interest=tp_cfg.sig_times,
+                                                 method=cfg.sig_channels_method,
+                                                 n_jobs=-1)
                 del base_data_sig
                 sig_channels_clean = [ch for ch in sig_channels if ch not in
                                       raw.info['bads']]
