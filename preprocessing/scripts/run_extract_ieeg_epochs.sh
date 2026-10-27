@@ -21,14 +21,14 @@ BIDS_ROOT="/hpc/home/zms14/cworkspace/BIDS_1.0_Lexical_µECoG/BIDS"
 FEATURES="high_gamma"
 TASK_PERIOD="production"
 USE_SIG=false
-PHONEME_LEVEL=false
+DERIV_NAME=null
 # Spatial-average mode: when SA_ENABLED=true, the raw input is read from
 # derivatives/spatialAvg/ for the requested SA_CONTACT_SIZE (produced by
 # spatial_avg_raw.py).  SA_CONTACT_SIZE must be set when SA_ENABLED=true.
 SA_ENABLED=false
 SA_CONTACT_SIZE=""
 
-while getopts s:b:t:f:p:u:l:a:z: flag
+while getopts s:b:t:f:p:u:d:a:z: flag
 do
     case "${flag}" in
         s) SUBJECT=${OPTARG};;
@@ -37,7 +37,7 @@ do
         f) FEATURES=${OPTARG};;
         p) TASK_PERIOD=${OPTARG};;
         u) USE_SIG=${OPTARG};;
-        l) PHONEME_LEVEL=${OPTARG};;
+        d) DERIV_NAME=${OPTARG};;
         a) SA_ENABLED=${OPTARG};;
         z) SA_CONTACT_SIZE=${OPTARG};;
     esac
@@ -58,7 +58,7 @@ fi
 # ----------------------------
 # cd ../..
 cd ..
-echo "Extracting epochs for subject ${SUBJECT} with features ${FEATURES} and task period ${TASK_PERIOD} (phoneme_level=${PHONEME_LEVEL}, spatial_avg.enabled=${SA_ENABLED}, spatial_avg.contact_size=${SA_CONTACT_SIZE:-null})"
+echo "Extracting epochs for subject ${SUBJECT} with features ${FEATURES} and task period ${TASK_PERIOD} (derivative_name=${DERIV_NAME}, spatial_avg.enabled=${SA_ENABLED}, spatial_avg.contact_size=${SA_CONTACT_SIZE:-null})"
 
 SA_ARGS="spatial_avg.enabled=${SA_ENABLED}"
 if [[ -n "${SA_CONTACT_SIZE}" ]]; then
@@ -73,6 +73,6 @@ python extract_ieeg_epochs.py \
     features=${FEATURES} \
     task_periods=${TASK_PERIOD} \
     sig_channels=${USE_SIG} \
-    phoneme_level=${PHONEME_LEVEL} \
+    derivative_name=${DERIV_NAME} \
     ${SA_ARGS} \
     hydra.run.dir=/hpc/home/zms14/cworkspace/outputs/${SLURM_JOB_NAME}_${SLURM_JOB_ID}
