@@ -1,9 +1,10 @@
 subject: ???
-# subject: S85
+# subject: S91
 # Use a BIDS-compliant label. Run suffixes (e.g. S84a, S84b) are supported;
 # RHD files and recon anatomy are resolved from the base ID (S84).
 
-task: lexical
+task: sentence
+# task: lexical
 # task: phoneme
 
 # Directory containing RHD source data and the trialInfo file from the
@@ -19,6 +20,7 @@ fileIDs: null
 # Electrode array channel map (128-strip, 256-grid, 256-strip,
 # 1024-grid, hybrid-strip).  If null, the user is prompted interactively.
 array_type: null
+# array_type: hybrid-strip
 # array_type: 256-strip
 
 # Number of identical arrays used.  When > 1 the channel map is
@@ -26,7 +28,7 @@ array_type: null
 num_arrays: 1
 
 # Parent directory containing subject anatomical subdirectories.
-recon_path: ~/Box/ECoG_Recon 
+recon_path: ~/Box/ECoG_Recon_Full
 
 # Use external trigger onsets instead of calculating from RHD data.
 use_ext_trigger: false
