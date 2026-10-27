@@ -1,21 +1,22 @@
 from __future__ import annotations
 
-from pathlib import Path
-from tkinter import filedialog
 import logging
 import shutil
 import subprocess
-import numpy as np
-from scipy.io import loadmat, wavfile
-from scipy.signal import resample_poly, correlate, find_peaks
-from scipy.stats import median_abs_deviation
-import noisereduce as nr
+from collections.abc import Sequence
+from pathlib import Path
+from tkinter import filedialog
+from typing import Any
+
+import h5py
 import matplotlib.pyplot as plt
 import mne
-import h5py
-from typing import Any, Dict, List, Optional, Sequence, Tuple, Union
-
+import noisereduce as nr
+import numpy as np
 from load_intan_rhd_format.load_intan_rhd_format import read_data
+from scipy.io import loadmat, wavfile
+from scipy.signal import correlate, find_peaks, resample_poly
+from scipy.stats import median_abs_deviation
 
 try:
     from subject_utils import base_subject_id
@@ -31,15 +32,16 @@ MISSING_DATA_VALUE = 0
 
 
 class rhdLoader:
-
-    def __init__(self,
-                 subject: str,
-                 rhd_dir: Optional[Union[str, Path]] = None,
-                 out_dir: Optional[Union[str, Path]] = None,
-                 fileIDs: Optional[tuple[int, int]] = None,
-                 array_type: Optional[str] = None,
-                 num_arrays: int = 1,
-                 missing_data_idx: Optional[Sequence[int]] = None) -> None:
+    def __init__(
+        self,
+        subject: str,
+        rhd_dir: str | Path | None = None,
+        out_dir: str | Path | None = None,
+        fileIDs: tuple[int, int] | None = None,
+        array_type: str | None = None,
+        num_arrays: int = 1,
+        missing_data_idx: Sequence[int] | None = None,
+    ) -> None:
         """Initialize an RHD data loader.
 
         Args:
@@ -73,41 +75,50 @@ class rhdLoader:
 
         if rhd_dir is None:
             rhd_dir = filedialog.askdirectory(
-                title=f'Select RHD data directory for subject {subject}')
+                title=f"Select RHD data directory for subject {subject}"
+            )
         self.rhd_dir = Path(rhd_dir)
-        # self.fileIDs = (int(fileIDs[0]), int(fileIDs[1])) if fileIDs is not None else None
-        # allow fileIDs to be None (no selection), have a single None (lower or upper bound), or all integers (lower and upper bound)
+        # self.fileIDs = (int(fileIDs[0]), int(fileIDs[1]))
+        # if fileIDs is not None else None
+        # Allow None, one None bound, or two integer bounds.
         self.fileIDs = [None, None]
         if fileIDs is not None:
             for i, fileID in enumerate(fileIDs):
-                self.fileIDs[i] = int(fileID) if isinstance(fileID, int) else None
+                self.fileIDs[i] = (
+                    int(fileID) if isinstance(fileID, int) else None
+                )
         self.fileIDs = tuple(self.fileIDs)
 
         self.missing_data_idx = missing_data_idx
 
         if array_type is None:
-            # arr_types = ['128-strip', '256-grid', '256-strip', '256-strip-old', '1024-grid-S82', 'hybrid-strip', 'hybrid-strip-old']
-            arr_types = Path(__file__).parent / 'channel_maps'
-            arr_types = [f.stem for f in arr_types.glob('*.mat')]
-            types = '/'.join(arr_types)
-            resp = input(f'Please specify array type ({types}):')
+            # arr_types = ['128-strip', '256-grid', '256-strip',
+            #              '256-strip-old', '1024-grid-S82',
+            #              'hybrid-strip', 'hybrid-strip-old']
+            arr_types = Path(__file__).parent / "channel_maps"
+            arr_types = [f.stem for f in arr_types.glob("*.mat")]
+            types = "/".join(arr_types)
+            resp = input(f"Please specify array type ({types}):")
             if resp in arr_types:
-                array_type = resp.split('.')[0]
+                array_type = resp.split(".")[0]
             else:
-                raise ValueError('Invalid array type specified. This type may '
-                                 'not be implemented yet.')
+                raise ValueError(
+                    "Invalid array type specified. This type may "
+                    "not be implemented yet."
+                )
         else:
-            array_type = array_type.split('.')[0]
-        logger.info(f'Using array type: {array_type}')
+            array_type = array_type.split(".")[0]
+        logger.info(f"Using array type: {array_type}")
         if num_arrays > 1:
             self.channel_map = self._build_composite_channel_map(
-                array_type, num_arrays,
+                array_type,
+                num_arrays,
             )
         else:
             self.channel_map = self._get_channel_map(array_type)
         self.save_channel_map()
 
-    def load_data(self, use_ext_mic: bool = False) -> "rhdLoader":
+    def load_data(self, use_ext_mic: bool = False) -> rhdLoader:
         """Load RHD data for the initialized subject and save artifacts.
 
         This function finds the subject RHD files, reads them, computes bad
@@ -124,73 +135,85 @@ class rhdLoader:
             The loader instance (self) to allow method chaining.
         """
         fs_down = 2000  # target downsampled frequency in Hz
-        logger.info(f'Loading RHD data for subject {self.subject} '
-                    f'(RHD/recon prefix: {self.rhd_subject}) '
-                    f'from directory: {self.rhd_dir}...')
+        logger.info(
+            f"Loading RHD data for subject {self.subject} "
+            f"(RHD/recon prefix: {self.rhd_subject}) "
+            f"from directory: {self.rhd_dir}..."
+        )
         rhd_files = self._get_subj_files()
-        print(f'Found files: {rhd_files}')
-        all_data = self._build_full_rhd_data(rhd_files, fs_down, self.missing_data_idx)
+        print(f"Found files: {rhd_files}")
+        all_data = self._build_full_rhd_data(
+            rhd_files, fs_down, self.missing_data_idx
+        )
 
         # calculate bad channels based on impedance
-        bad_channels = self._get_high_impedance_channels(all_data['impedance'])
+        bad_channels = self._get_high_impedance_channels(all_data["impedance"])
         if self.missing_data_idx is not None:
             missing_channels = [int(ch) for ch in self.missing_data_idx]
             bad_channels = sorted(set(bad_channels) | set(missing_channels))
             logger.info(
-                'Marked missing data channels as bad (0-indexed): '
-                f'{missing_channels}')
+                "Marked missing data channels as bad (0-indexed): "
+                f"{missing_channels}"
+            )
         else:
             missing_channels = None
-        all_data['bad_channels'] = bad_channels
-        all_data['missing_channels'] = missing_channels
+        all_data["bad_channels"] = bad_channels
+        all_data["missing_channels"] = missing_channels
 
         # save raw data as h5 file in output dir
-        _ = self._save_raw_data(all_data['raw_data'],
-                                fs_down,
-                                all_data['bad_channels'],
-                                self.channel_map,
-                                f'sub-{self.subject}_raw.h5',
-                                missing_channels=all_data['missing_channels'])
+        _ = self._save_raw_data(
+            all_data["raw_data"],
+            fs_down,
+            all_data["bad_channels"],
+            self.channel_map,
+            f"sub-{self.subject}_raw.h5",
+            missing_channels=all_data["missing_channels"],
+        )
 
         # # see if we can free up memory here
-        del all_data['raw_data']
-        del all_data['bad_channels']
+        del all_data["raw_data"]
+        del all_data["bad_channels"]
 
         # # save raw data to output dir
         # _ = self._save_mne_raw(raw, f'sub-{self.subject}_raw.edf')
 
         # save misc rhd data as numpy files in output dir
-        _ = self._save_rhd_misc_data(all_data['trigger'],
-                                     f'sub-{self.subject}_trigger.npy')
-        _ = self._save_mic_wav(all_data['mic'], all_data['fs'])
-        _ = self._save_rhd_misc_data(all_data['impedance'],
-                                     f'sub-{self.subject}_impedance.npy')
-        self.fs = all_data['fs']
+        _ = self._save_rhd_misc_data(
+            all_data["trigger"], f"sub-{self.subject}_trigger.npy"
+        )
+        _ = self._save_mic_wav(all_data["mic"], all_data["fs"])
+        _ = self._save_rhd_misc_data(
+            all_data["impedance"], f"sub-{self.subject}_impedance.npy"
+        )
+        self.fs = all_data["fs"]
 
         allblocks_path = self._allblocks_wav_path()
         if use_ext_mic:
             ext_path = self._mic_ext_wav_path()
             if not ext_path.exists():
                 raise FileNotFoundError(
-                    f'External microphone WAV not found: {ext_path}')
+                    f"External microphone WAV not found: {ext_path}"
+                )
             logger.info(
-                f'Copying external microphone from {ext_path} to '
-                f'{allblocks_path}')
+                "Copying external microphone from "
+                f"{ext_path} to {allblocks_path}"
+            )
             shutil.copyfile(ext_path, allblocks_path)
         else:
-            logger.info(
-                f'Copying RHD microphone to {allblocks_path} for MFA')
+            logger.info(f"Copying RHD microphone to {allblocks_path} for MFA")
             shutil.copyfile(self._mic_wav_path(), allblocks_path)
-        logger.info('...allblocks.wav saved successfully.')
+        logger.info("...allblocks.wav saved successfully.")
 
-        logger.info('...data loading complete.')
+        logger.info("...data loading complete.")
         return self
 
-    def make_cue_events(self,
-                        upper_threshold_v: Optional[float] = None,
-                        use_ext_trigger: bool = False,
-                        use_ext_mic: bool = False,
-                        prop_decrease: float = 0.9) -> None:
+    def make_cue_events(
+        self,
+        upper_threshold_v: float | None = None,
+        use_ext_trigger: bool = False,
+        use_ext_mic: bool = False,
+        prop_decrease: float = 0.9,
+    ) -> None:
         """Create cue event timings by cross-correlating stimulus audio.
 
         This method loads the ``allblocks.wav`` microphone trace, optionally
@@ -219,31 +242,46 @@ class rhdLoader:
 
         mic, fs = self._load_allblocks()
         if not use_ext_mic:
-            logger.info('Denoising microphone trace for cue-event alignment...')
+            logger.info(
+                "Denoising microphone trace for cue-event alignment..."
+            )
             mic = nr.reduce_noise(
-                y=mic, sr=fs, stationary=False, prop_decrease=prop_decrease,
+                y=mic,
+                sr=fs,
+                stationary=False,
+                prop_decrease=prop_decrease,
             )
 
         # load or calculate trigger onsets
         if use_ext_trigger:
-            trig_times = np.loadtxt(self.out_dir / f'sub-{self.subject}' / f'sub-{self.subject}_triggerExt.csv', delimiter=',')
+            trig_times = np.loadtxt(
+                self.out_dir
+                / f"sub-{self.subject}"
+                / f"sub-{self.subject}_triggerExt.csv",
+                delimiter=",",
+            )
         else:
-            trigger = np.load(self.out_dir / f'sub-{self.subject}' / ('sub-' +
-                            self.subject + '_trigger.npy'))
+            trigger = np.load(
+                self.out_dir
+                / f"sub-{self.subject}"
+                / ("sub-" + self.subject + "_trigger.npy")
+            )
             trig_times = self.detect_trigger_onsets(
-                trigger, fs, upper_threshold_v=upper_threshold_v,
+                trigger,
+                fs,
+                upper_threshold_v=upper_threshold_v,
             )
 
         # load trial information
-        trialInfo_path = self.rhd_dir / 'trialInfo.mat'
+        trialInfo_path = self.rhd_dir / "trialInfo.mat"
         if not trialInfo_path.exists():
-            logger.error(f'trialInfo.mat file not found in {self.rhd_dir}')
-            raise FileNotFoundError('trialInfo.mat file not found in '
-                                    f'{self.rhd_dir}')
-        trial_info = loadmat(trialInfo_path)['trialInfo'].squeeze()
+            logger.error(f"trialInfo.mat file not found in {self.rhd_dir}")
+            raise FileNotFoundError(
+                f"trialInfo.mat file not found in {self.rhd_dir}"
+            )
+        trial_info = loadmat(trialInfo_path)["trialInfo"].squeeze()
 
-
-        stim_files = self._get_stim_dir().rglob('**/*.wav')
+        stim_files = self._get_stim_dir().rglob("**/*.wav")
 
         # === Relevant stimuli from trial info ===
         # try:
@@ -255,16 +293,21 @@ class rhdLoader:
         for t in trial_info:
             try:
                 # for sentence task with different struct
-                stim_name = t['sound'][0, 0]['name'][0, 0][0]
+                stim_name = t["sound"][0, 0]["name"][0, 0][0]
             except IndexError:
-                stim_name = t['sound'][0, 0][0]
-            stim_name = stim_name.split('_')[-1] # remove block prefix if necessary (may need to be updated if it causes errors down the road)
+                stim_name = t["sound"][0, 0][0]
+            stim_name = stim_name.split(
+                "_"
+            )[
+                -1
+            ]  # Remove block prefix if necessary.
             rel_stims.append(stim_name)
 
         rel_stims_set = set(rel_stims)
         # Filter only relevant stimuli
-        rel_stims_info = [(f.parent, f.name) for f in stim_files if f.name in
-                          rel_stims_set]
+        rel_stims_info = [
+            (f.parent, f.name) for f in stim_files if f.name in rel_stims_set
+        ]
 
         # Remove duplicates by filename
         seen = set()
@@ -286,8 +329,9 @@ class rhdLoader:
             stims[stim_name_no_ext] = stim_resamp
 
         # === Process trials ===
-        with open(self.out_dir / f'sub-{self.subject}' / 'cue_events.txt',
-                  'w') as fid_cue:
+        with open(
+            self.out_dir / f"sub-{self.subject}" / "cue_events.txt", "w"
+        ) as fid_cue:
             for iTrial in range(len(trial_info)):
                 curr_stim = rel_stims[iTrial]
                 curr_stim_name = Path(curr_stim).stem
@@ -297,13 +341,13 @@ class rhdLoader:
 
                 # Define cross-correlation search window
                 xcorr_start = int(max((on - xcorr_start_buffer) * fs, 0))
-                xcorr_end = int(min((on + xcorr_end_buffer) * fs,
-                                    len(mic)))
+                xcorr_end = int(min((on + xcorr_end_buffer) * fs, len(mic)))
                 allblocks_win = mic[xcorr_start:xcorr_end]
 
                 # Cross-correlation
-                xcorr_val = correlate(allblocks_win, curr_stim_aud,
-                                      mode="full")
+                xcorr_val = correlate(
+                    allblocks_win, curr_stim_aud, mode="full"
+                )
                 lags = np.arange(-len(curr_stim_aud) + 1, len(allblocks_win))
                 lag_idx = np.argmax(np.abs(xcorr_val))
                 l_offset = lags[lag_idx]
@@ -313,19 +357,23 @@ class rhdLoader:
                 dur = len(curr_stim_aud) / fs
                 stim_offset = stim_onset + dur
 
-                fid_cue.write(f"{stim_onset:.6f}\t{stim_offset:.6f}\t"
-                              f"{iTrial+1}_{curr_stim_name}\n")
-        logger.info('Successfully created cue_events.txt')
+                fid_cue.write(
+                    f"{stim_onset:.6f}\t{stim_offset:.6f}\t"
+                    f"{iTrial + 1}_{curr_stim_name}\n"
+                )
+        logger.info("Successfully created cue_events.txt")
 
     @staticmethod
-    def detect_trigger_onsets(trigger: np.ndarray,
-                              fs: float,
-                              min_dist_s: float = 3.0,
-                              threshold_factor: float = 5.0,
-                              task_start_buffer_s: float = 3.0,
-                              peak_rejection_factor: float = 7.0,
-                              upper_threshold_v: Optional[float] = None,
-                              interactive: bool = True) -> np.ndarray:
+    def detect_trigger_onsets(
+        trigger: np.ndarray,
+        fs: float,
+        min_dist_s: float = 3.0,
+        threshold_factor: float = 5.0,
+        task_start_buffer_s: float = 3.0,
+        peak_rejection_factor: float = 7.0,
+        upper_threshold_v: float | None = None,
+        interactive: bool = True,
+    ) -> np.ndarray:
         """
         Automatically detect trial trigger onsets from a photodiode trace.
 
@@ -361,14 +409,15 @@ class rhdLoader:
         # --- Step 1: Robust baseline + noise estimation ---
         baseline = np.percentile(trig, 10)
         trig_z = trig - baseline
-        noise_std = median_abs_deviation(trig_z, scale='normal')
+        noise_std = median_abs_deviation(trig_z, scale="normal")
         task_start_thresh = baseline + threshold_factor * noise_std
 
         trig = np.maximum(trig, baseline)
 
         # --- Step 2: Find the wide pulse for task start ---
-        peaks, props = find_peaks(trig, height=task_start_thresh,
-                                  width=int(0.5*fs))
+        peaks, _props = find_peaks(
+            trig, height=task_start_thresh, width=int(0.5 * fs)
+        )
         print(f"Detected {len(peaks)} potential task start pulses.")
         if len(peaks) == 0:
             print("No task start pulse detected automatically.")
@@ -383,55 +432,82 @@ class rhdLoader:
         trig_post = trig[task_start_idx:]
         baseline_post = np.percentile(trig_post, 10)
         noise_std_post = median_abs_deviation(
-            trig_post - baseline_post, scale='normal',
+            trig_post - baseline_post,
+            scale="normal",
         )
         threshold = baseline_post + threshold_factor * noise_std_post
-        trial_height = ((threshold, upper_threshold_v)
-                        if upper_threshold_v is not None else threshold)
+        trial_height = (
+            (threshold, upper_threshold_v)
+            if upper_threshold_v is not None
+            else threshold
+        )
 
         min_samples = int(min_dist_s * fs)
-        peaks_trials, props_trials = find_peaks(trig_post, height=trial_height,
-                                                distance=min_samples)
+        peaks_trials, props_trials = find_peaks(
+            trig_post, height=trial_height, distance=min_samples
+        )
         trial_onsets = (peaks_trials + task_start_idx) / fs
 
         # --- Step 4: Look for outliers in amplitudes of trigger peaks ---
         if len(peaks_trials) > 0:
-            peak_heights = props_trials['peak_heights']
+            peak_heights = props_trials["peak_heights"]
             mean_height = np.mean(peak_heights)
             std_height = np.std(peak_heights)
-            valid_idxs = np.where(np.abs(peak_heights - mean_height) <=
-                                  peak_rejection_factor * std_height)[0]
+            valid_idxs = np.where(
+                np.abs(peak_heights - mean_height)
+                <= peak_rejection_factor * std_height
+            )[0]
             trial_onsets = trial_onsets[valid_idxs]
 
-        print(f"Detected {len(trial_onsets)} "
-              f"trials after t={task_start_time:.2f}s.")
+        print(
+            f"Detected {len(trial_onsets)} trials after "
+            f"t={task_start_time:.2f}s."
+        )
 
         # --- Step 5: Plot results ---
         plt.figure(figsize=(12, 4))
         plt.plot(t_axis, trig, label="Trigger")
-        plt.axhline(threshold, color='r', linestyle='--',
-                    label=f"Trial threshold = {threshold:.3f}")
+        plt.axhline(
+            threshold,
+            color="r",
+            linestyle="--",
+            label=f"Trial threshold = {threshold:.3f}",
+        )
         if upper_threshold_v is not None:
-            plt.axhline(upper_threshold_v, color='m', linestyle='--',
-                        label=f"Upper threshold = {upper_threshold_v:.3f}")
-        plt.axvline(task_start_time, color='g', linestyle='--',
-                    label="Task start")
-        plt.plot(trial_onsets, trig[(trial_onsets * fs).astype(int)], 'rx',
-                 label="Detected trials")
+            plt.axhline(
+                upper_threshold_v,
+                color="m",
+                linestyle="--",
+                label=f"Upper threshold = {upper_threshold_v:.3f}",
+            )
+        plt.axvline(
+            task_start_time, color="g", linestyle="--", label="Task start"
+        )
+        plt.plot(
+            trial_onsets,
+            trig[(trial_onsets * fs).astype(int)],
+            "rx",
+            label="Detected trials",
+        )
         plt.xlabel("Time (s)")
         plt.ylabel("Amplitude (V)")
         plt.title("Automatic Trigger Detection")
-        plt.legend(loc='lower right')
+        plt.legend(loc="lower right")
         plt.tight_layout()
         plt.show(block=False)
 
         # --- Step 6: Optional manual override ---
         if interactive:
-            resp = ''
-            while resp not in ['yes', 'y', 'quit', 'q']:
-                resp = input("Are these detections correct? "
-                             "(yes-y/no-n/quit-q): ").strip().lower()
-                if resp in ['n', 'no']:
+            resp = ""
+            while resp not in ["yes", "y", "quit", "q"]:
+                resp = (
+                    input(
+                        "Are these detections correct? (yes-y/no-n/quit-q): "
+                    )
+                    .strip()
+                    .lower()
+                )
+                if resp in ["n", "no"]:
                     start_time = float(input("Enter start time (s): "))
                     end_time = float(input("Enter end time (s): "))
                     threshold = float(input("Enter threshold (V): "))
@@ -441,11 +517,14 @@ class rhdLoader:
                     start_idx = int(start_time * fs)
                     end_idx = int(end_time * fs)
                     trig_crop = trig[start_idx:end_idx]
-                    manual_height = ((threshold, upper_threshold_v)
-                                     if upper_threshold_v is not None
-                                     else threshold)
+                    manual_height = (
+                        (threshold, upper_threshold_v)
+                        if upper_threshold_v is not None
+                        else threshold
+                    )
                     peaks_manual, _ = find_peaks(
-                        trig_crop, height=manual_height,
+                        trig_crop,
+                        height=manual_height,
                         distance=int(min_dist_s * fs),
                     )
                     trial_onsets = (peaks_manual + start_idx) / fs
@@ -454,21 +533,26 @@ class rhdLoader:
 
                     plt.figure(figsize=(12, 4))
                     plt.plot(t_axis, trig, label="Trigger")
-                    plt.plot(trial_onsets, trig[(trial_onsets *
-                                                 fs).astype(int)], 'rx')
-                    plt.axvline(start_time, color='g', linestyle='--')
-                    plt.axvline(end_time, color='g', linestyle='--')
-                    plt.axhline(threshold, color='r', linestyle='--')
+                    plt.plot(
+                        trial_onsets,
+                        trig[(trial_onsets * fs).astype(int)],
+                        "rx",
+                    )
+                    plt.axvline(start_time, color="g", linestyle="--")
+                    plt.axvline(end_time, color="g", linestyle="--")
+                    plt.axhline(threshold, color="r", linestyle="--")
                     plt.xlabel("Time (s)")
                     plt.ylabel("Amplitude (V)")
                     plt.title("Manual Trigger Detection")
                     plt.show(block=False)
-                elif resp not in ['yes', 'y', 'quit', 'q']:
+                elif resp not in ["yes", "y", "quit", "q"]:
                     print("Invalid response. Please enter yes, no, or quit.")
 
         return trial_onsets
 
-    def run_mfa(self, task_name: str = 'phoneme_sequencing', denoise_mic: bool = True) -> bool:
+    def run_mfa(
+        self, task_name: str = "phoneme_sequencing", denoise_mic: bool = True
+    ) -> bool:
         """Run the Montreal Forced Aligner (MFA) pipeline for this subject.
 
         This method copies ``trialInfo.mat`` to the subject output directory
@@ -491,35 +575,38 @@ class rhdLoader:
         allblocks_wav_path = self._allblocks_wav_path()
         if not allblocks_wav_path.exists():
             raise FileNotFoundError(
-                f'{allblocks_wav_path.name} not found in '
-                f'{allblocks_wav_path.parent}. Run load_data() first.')
+                f"{allblocks_wav_path.name} not found in "
+                f"{allblocks_wav_path.parent}. Run load_data() first."
+            )
 
         # copy trialInfo to subject directory
-        trialInfo_src = self.rhd_dir / 'trialInfo.mat'
-        trialInfo_dst = self.out_dir / f'sub-{self.subject}' / 'trialInfo.mat'
+        trialInfo_src = self.rhd_dir / "trialInfo.mat"
+        trialInfo_dst = self.out_dir / f"sub-{self.subject}" / "trialInfo.mat"
         shutil.copyfile(trialInfo_src, trialInfo_dst)
 
         # run MFA (assumes MFA is cloned to
         # Box/CoganLab/Data/Micro/BIDS_processing/MFA_pipeline)
-        mfa_cmd = ['python',
-                   str(Path(self._get_out_dir() / 'MFA_pipeline' /
-                       'mfa_pipeline.py')),
-                   'task=' + task_name,
-                   'patient_dir=' + str(self.out_dir),
-                   'patients=sub-' + self.subject,
-                   'denoise=' + str(denoise_mic),
-                   ]
+        mfa_cmd = [
+            "python",
+            str(
+                Path(self._get_out_dir() / "MFA_pipeline" / "mfa_pipeline.py")
+            ),
+            "task=" + task_name,
+            "patient_dir=" + str(self.out_dir),
+            "patients=sub-" + self.subject,
+            "denoise=" + str(denoise_mic),
+        ]
         try:
-            logger.info(f'Running MFA for subject {self.subject}...')
+            logger.info(f"Running MFA for subject {self.subject}...")
             subprocess.run(mfa_cmd, check=True)
-            logger.info('...MFA processing complete.')
+            logger.info("...MFA processing complete.")
             self._process_mfa_output()
         except subprocess.CalledProcessError as e:
-            logger.error(f'Error running MFA: {e}')
+            logger.error(f"Error running MFA: {e}")
             return False
         return True
 
-    def create_trials_dict(self) -> Dict[str, List[Any]]:
+    def create_trials_dict(self) -> dict[str, list[Any]]:
         """Create a trials dictionary from MFA token-level annotation files.
 
         Reads the token-level word timing files produced by MFA for stimulus
@@ -532,37 +619,38 @@ class rhdLoader:
             value is a list corresponding to trials in order.
         """
         trials_dict = {
-            'stimulus': [],
-            'auditory_onset': [],
-            'auditory_offset': [],
-            'response_onset': [],
-            'response_offset': [],
+            "stimulus": [],
+            "auditory_onset": [],
+            "auditory_offset": [],
+            "response_onset": [],
+            "response_offset": [],
         }
         # open MFA token-level annotations to read in parallel
         fname_stim = (
-            self.out_dir / f'sub-{self.subject}' / 'mfa_stim_words.txt'
+            self.out_dir / f"sub-{self.subject}" / "mfa_stim_words.txt"
         )
-        f_stim = open(fname_stim, 'r')
         fname_resp = (
-            self.out_dir / f'sub-{self.subject}' / 'mfa_resp_words.txt'
+            self.out_dir / f"sub-{self.subject}" / "mfa_resp_words.txt"
         )
-        f_resp = open(fname_resp, 'r')
 
         # save timings for each trial to trials_dict
-        for line_stim, line_resp in zip(f_stim, f_resp):
-            stim_onset, stim_offset, stim_word = line_stim.strip().split('\t')
-            resp_onset, resp_offset, resp_word = line_resp.strip().split('\t')
+        with fname_stim.open() as f_stim, fname_resp.open() as f_resp:
+            for line_stim, line_resp in zip(f_stim, f_resp):
+                stim_onset, stim_offset, stim_word = line_stim.strip().split(
+                    "\t"
+                )
+                resp_onset, resp_offset, _resp_word = line_resp.strip().split(
+                    "\t"
+                )
 
-            trials_dict['stimulus'].append(stim_word)
-            trials_dict['auditory_onset'].append(float(stim_onset))
-            trials_dict['auditory_offset'].append(float(stim_offset))
-            trials_dict['response_onset'].append(float(resp_onset))
-            trials_dict['response_offset'].append(float(resp_offset))
-        f_stim.close()
-        f_resp.close()
+                trials_dict["stimulus"].append(stim_word)
+                trials_dict["auditory_onset"].append(float(stim_onset))
+                trials_dict["auditory_offset"].append(float(stim_offset))
+                trials_dict["response_onset"].append(float(resp_onset))
+                trials_dict["response_offset"].append(float(resp_offset))
         return trials_dict
 
-    def _get_subj_files(self) -> List[Path]:
+    def _get_subj_files(self) -> list[Path]:
         """Return a sorted list of RHD files for the subject.
 
         Returns:
@@ -570,7 +658,7 @@ class rhdLoader:
             directory. If `self.fileIDs` is provided, the returned list will
             be filtered to those indices (1-indexed by order).
         """
-        pattern = f'{self.rhd_subject}*.rhd'
+        pattern = f"{self.rhd_subject}*.rhd"
         # pattern = '*.rhd'
         rhd_files = sorted(self.rhd_dir.glob(pattern))
         # only keep files selected by numerical IDs corresponding to order
@@ -580,10 +668,11 @@ class rhdLoader:
                 start = 1
             if end is None:
                 end = len(rhd_files)
-            logger.info(f'Using RHD files: {start} through {end}')
-            rhd_files = [f for i, f in enumerate(rhd_files)
-                         if start <= i + 1 <= end]
-        logger.info(f'Found files: {[f.name for f in rhd_files]}')
+            logger.info(f"Using RHD files: {start} through {end}")
+            rhd_files = [
+                f for i, f in enumerate(rhd_files) if start <= i + 1 <= end
+            ]
+        logger.info(f"Found files: {[f.name for f in rhd_files]}")
         return rhd_files
 
     def _get_channel_map(self, array_type: str) -> np.ndarray:
@@ -597,14 +686,16 @@ class rhdLoader:
             file.
         """
         # load channel map based on array type
-        chan_map_dir = Path(__file__).parent / 'channel_maps'
-        chan_map_fname = chan_map_dir / f'{array_type}.mat'
+        chan_map_dir = Path(__file__).parent / "channel_maps"
+        chan_map_fname = chan_map_dir / f"{array_type}.mat"
         # convert 1-indexed channels in mat file to 0-indexed
-        chan_map = loadmat(chan_map_fname)['chanMap'].squeeze() - 1
+        chan_map = loadmat(chan_map_fname)["chanMap"].squeeze() - 1
         return chan_map
 
     def _build_composite_channel_map(
-        self, array_type: str, count: int,
+        self,
+        array_type: str,
+        count: int,
     ) -> np.ndarray:
         """Build a composite channel map by vertically stacking *count* copies.
 
@@ -625,7 +716,7 @@ class rhdLoader:
 
         copies = [base_map]
         for i in range(1, count):
-            # append NaN channels between arrays (single row of NaNs for vertical stack)
+            # Append NaN channels between arrays.
             nan_channels = np.full((1, n_cols), np.nan)
             copies.append(nan_channels)
 
@@ -636,8 +727,11 @@ class rhdLoader:
         return np.vstack(copies)
 
     def _build_full_rhd_data(
-        self, rhd_files: Sequence[Path], fs_down: float, missing_data_idx: Optional[Sequence[int]] = None
-    ) -> Dict[str, Any]:
+        self,
+        rhd_files: Sequence[Path],
+        fs_down: float,
+        missing_data_idx: Sequence[int] | None = None,
+    ) -> dict[str, Any]:
         """Read and concatenate data from multiple RHD files.
 
         Args:
@@ -661,66 +755,71 @@ class rhdLoader:
         data_chans = np.arange(n_chans)
         if missing_data_idx is not None:
             data_chans = np.setdiff1d(data_chans, missing_data_idx)
-        
-        
+
         amplifier_data_all = np.empty((n_chans, 0), dtype=DATA_TYPE)
         trigger_all = np.empty((0,), dtype=DATA_TYPE)
         mic_all = np.empty((0,), dtype=DATA_TYPE)
         impedance_all = np.empty((0, n_chans), dtype=DATA_TYPE)
         # store data from each RHD file (corresponds to 1 min of data)
         for rhd_file in rhd_files:
-            logger.info(f'Loading RHD file: {rhd_file.name}')
+            logger.info(f"Loading RHD file: {rhd_file.name}")
             data = read_data(rhd_file)  # resample raw data to 2 kHz
 
-            fs_data = data['frequency_parameters']['amplifier_sample_rate']
+            fs_data = data["frequency_parameters"]["amplifier_sample_rate"]
             if fs_data != fs_down:
-                logger.info(f'Resampling raw data from {fs_data} Hz to '
-                            f'{fs_down} Hz...')
-                amp_data = resample_poly(data['amplifier_data'],
-                                         fs_down, fs_data,
-                                         axis=1)
+                logger.info(
+                    f"Resampling raw data from {fs_data} Hz to {fs_down} Hz..."
+                )
+                amp_data = resample_poly(
+                    data["amplifier_data"], fs_down, fs_data, axis=1
+                )
             else:
-                amp_data = data['amplifier_data']
+                amp_data = data["amplifier_data"]
 
-            # instantiate amplifier data as NaN array to account for missing data
+            # Instantiate amplifier data as NaN for missing data.
             # (do this after resampling to use known time axis)
-            amp_data_full = np.full((n_chans, amp_data.shape[1]), MISSING_DATA_VALUE, dtype=DATA_TYPE)
+            amp_data_full = np.full(
+                (n_chans, amp_data.shape[1]),
+                MISSING_DATA_VALUE,
+                dtype=DATA_TYPE,
+            )
             # fill in known data channels with RHD data, remaining are NaN
             amp_data_full[data_chans, :] = amp_data
 
             amplifier_data_all = np.append(
-                amplifier_data_all,
-                amp_data_full.astype(DATA_TYPE),
-                axis=1)
-            
-            # handle cases where board_adc_data is empty and needs placeholder
-            if 'board_adc_data' not in data:
-                logger.warning(
-                    f'Board ADC data is empty for {rhd_file.name}. '
-                    'Using placeholder values for trigger and '
-                    'microphone. Consider reconstructing this '
-                    'information from the trial information and '
-                    f'supplying sub-{self.subject}_micExt.wav and '
-                    f'sub-{self.subject}_triggerExt.csv in the subject '
-                    'output directory and set use_ext_mic / '
-                    'use_ext_trigger when running load_data() / '
-                    'make_cue_events().')
+                amplifier_data_all, amp_data_full.astype(DATA_TYPE), axis=1
+            )
 
-                outsize = data['amplifier_data'].shape[1]
+            # handle cases where board_adc_data is empty and needs placeholder
+            if "board_adc_data" not in data:
+                logger.warning(
+                    f"Board ADC data is empty for {rhd_file.name}. "
+                    "Using placeholder values for trigger and "
+                    "microphone. Consider reconstructing this "
+                    "information from the trial information and "
+                    f"supplying sub-{self.subject}_micExt.wav and "
+                    f"sub-{self.subject}_triggerExt.csv in the subject "
+                    "output directory and set use_ext_mic / "
+                    "use_ext_trigger when running load_data() / "
+                    "make_cue_events()."
+                )
+
+                outsize = data["amplifier_data"].shape[1]
                 trigger = np.full((outsize,), np.nan, dtype=DATA_TYPE)
                 mic = np.full((outsize,), np.nan, dtype=DATA_TYPE)
-                
-            else:
-                trigger = data['board_adc_data'][0, :].astype(DATA_TYPE)
-                mic = data['board_adc_data'][1, :].astype(DATA_TYPE)
 
+            else:
+                trigger = data["board_adc_data"][0, :].astype(DATA_TYPE)
+                mic = data["board_adc_data"][1, :].astype(DATA_TYPE)
 
             trigger_all = np.append(trigger_all, trigger, axis=0)
             mic_all = np.append(mic_all, mic, axis=0)
 
-            # instantiate impedance data as NaN array to account for missing data
+            # Instantiate impedance data as NaN for missing data.
             impedance_full = np.full((1, n_chans), np.nan, dtype=DATA_TYPE)
-            impedance_full[0, data_chans] = self._get_impedance_magnitudes(data)
+            impedance_full[0, data_chans] = self._get_impedance_magnitudes(
+                data
+            )
             # fill in known data channels with RHD data, remaining are NaN
             impedance_all = np.append(
                 impedance_all,
@@ -728,33 +827,30 @@ class rhdLoader:
                 axis=0,
             )
 
-            logger.info(f'      Data shape: {data["amplifier_data"].shape}')
-            logger.info(
-                f'      Trigger shape: {trigger.shape}'
-            )
-            logger.info(
-                f'      Mic shape: {mic.shape}'
-            )
-            logger.info(f'      Impedance shape: '
-                        f'{impedance_all[-1].shape}')
+            logger.info(f"      Data shape: {data['amplifier_data'].shape}")
+            logger.info(f"      Trigger shape: {trigger.shape}")
+            logger.info(f"      Mic shape: {mic.shape}")
+            logger.info(f"      Impedance shape: {impedance_all[-1].shape}")
 
         # save impedance as mean across files (don't know if this changes per
         # file or not but if it doesn't mean is still ok)
         impedance = np.nanmean(impedance_all, axis=0)
         full_data = {
-            'raw_data': amplifier_data_all,
-            'trigger': trigger_all,
-            'mic': mic_all,
-            'impedance': impedance,
-            'fs': data['frequency_parameters']['amplifier_sample_rate'],
+            "raw_data": amplifier_data_all,
+            "trigger": trigger_all,
+            "mic": mic_all,
+            "impedance": impedance,
+            "fs": data["frequency_parameters"]["amplifier_sample_rate"],
         }
         return full_data
 
-    def _convert_to_mne_raw(self,
-                            amplifier_data: np.ndarray,
-                            fs: float,
-                            bad_channels: Sequence[int],
-                            units: str = 'uV') -> mne.io.BaseRaw:
+    def _convert_to_mne_raw(
+        self,
+        amplifier_data: np.ndarray,
+        fs: float,
+        bad_channels: Sequence[int],
+        units: str = "uV",
+    ) -> mne.io.BaseRaw:
         """Convert raw amplifier data to an MNE Raw object.
 
         Args:
@@ -779,8 +875,9 @@ class rhdLoader:
             case "nV":
                 factor = 1e-9
             case _:
-                raise NotImplementedError("Unit " + units +
-                                          " not implemented yet")
+                raise NotImplementedError(
+                    "Unit " + units + " not implemented yet"
+                )
         channels = self.channel_map.flatten()  # get 1D list of channels
         # remove NaN channels (no channels here, filler for rectangular map)
         channels = channels[~np.isnan(channels)].astype(int)
@@ -788,14 +885,12 @@ class rhdLoader:
         # take the space of multiple micro channels
         channels = np.unique(channels).astype(str).tolist()
 
-        info = mne.create_info(channels, sfreq=fs, ch_types='ecog')
-        info['bads'] = [str(c) for c in bad_channels]
+        info = mne.create_info(channels, sfreq=fs, ch_types="ecog")
+        info["bads"] = [str(c) for c in bad_channels]
         raw = mne.io.RawArray(amplifier_data * factor, info)
         return raw
 
-    def _save_mne_raw(
-        self, raw: mne.io.BaseRaw, fname: Union[str, Path]
-    ) -> bool:
+    def _save_mne_raw(self, raw: mne.io.BaseRaw, fname: str | Path) -> bool:
         """Export an MNE Raw object to a file.
 
         Args:
@@ -805,19 +900,19 @@ class rhdLoader:
         Returns:
             True if saving succeeded, False if an exception occurred.
         """
-        save_path = self.out_dir / f'sub-{self.subject}' / fname
-        logger.info(f'Saving MNE Raw data to {save_path}...')
+        save_path = self.out_dir / f"sub-{self.subject}" / fname
+        logger.info(f"Saving MNE Raw data to {save_path}...")
         try:
             raw.export(save_path)
-            logger.info('...MNE Raw data saved successfully.')
+            logger.info("...MNE Raw data saved successfully.")
             return True
-        except Exception as e:
-            logger.error(f'Error saving MNE Raw data: {e}')
-            print('Failed to save MNE Raw data. Error written to log.')
+        except Exception as e:  # noqa: BLE001
+            logger.error(f"Error saving MNE Raw data: {e}")
+            print("Failed to save MNE Raw data. Error written to log.")
             return False
 
     def save_channel_map(self) -> bool:
-        """Save the channel map as a standalone .npy file in the subject directory.
+        """Save the channel map as a standalone .npy file.
 
         This allows the channel map to be updated independently of the raw
         data (e.g. to correct array type or channel naming) without
@@ -829,7 +924,8 @@ class rhdLoader:
             True on success, False on failure.
         """
         return self._save_rhd_misc_data(
-            self.channel_map, f'sub-{self.subject}_channel_map.npy',
+            self.channel_map,
+            f"sub-{self.subject}_channel_map.npy",
         )
 
     def update_impedance(
@@ -853,54 +949,57 @@ class rhdLoader:
         Returns:
             True on success, False on failure.
         """
-        subj_dir = self.out_dir / f'sub-{self.subject}'
-        imp_path = subj_dir / f'sub-{self.subject}_impedance.npy'
-        h5_path = subj_dir / f'sub-{self.subject}_raw.h5'
+        subj_dir = self.out_dir / f"sub-{self.subject}"
+        imp_path = subj_dir / f"sub-{self.subject}_impedance.npy"
+        h5_path = subj_dir / f"sub-{self.subject}_raw.h5"
 
         if from_saved and imp_path.exists():
-            logger.info(f'Loading saved impedance from {imp_path}')
+            logger.info(f"Loading saved impedance from {imp_path}")
             impedance = np.load(imp_path)
         else:
-            logger.info('Reading impedance from RHD file(s)...')
+            logger.info("Reading impedance from RHD file(s)...")
             rhd_files = self._get_subj_files()
             if not rhd_files:
-                logger.error('No RHD files found; cannot read impedance.')
+                logger.error("No RHD files found; cannot read impedance.")
                 return False
             data = read_data(rhd_files[0])
             impedance = self._get_impedance_magnitudes(data)
             del data
             self._save_rhd_misc_data(
-                impedance, f'sub-{self.subject}_impedance.npy',
+                impedance,
+                f"sub-{self.subject}_impedance.npy",
             )
 
         bad_channels = self._get_high_impedance_channels(
-            impedance, threshold=threshold,
+            impedance,
+            threshold=threshold,
         )
-        logger.info(f'Bad channels (0-indexed): {bad_channels}')
+        logger.info(f"Bad channels (0-indexed): {bad_channels}")
 
         if not h5_path.exists():
-            logger.error(f'HDF5 file not found: {h5_path}')
+            logger.error(f"HDF5 file not found: {h5_path}")
             return False
 
         try:
-            with h5py.File(h5_path, 'a') as hf:
-                if 'bad_channels' in hf:
-                    del hf['bad_channels']
-                hf.create_dataset('bad_channels', data=bad_channels)
-            logger.info('bad_channels updated in HDF5 file.')
+            with h5py.File(h5_path, "a") as hf:
+                if "bad_channels" in hf:
+                    del hf["bad_channels"]
+                hf.create_dataset("bad_channels", data=bad_channels)
+            logger.info("bad_channels updated in HDF5 file.")
             return True
-        except Exception as e:
-            logger.error(f'Failed to update bad_channels: {e}')
+        except Exception as e:  # noqa: BLE001
+            logger.error(f"Failed to update bad_channels: {e}")
             return False
 
-    def _save_raw_data(self,
-                       data: np.ndarray,
-                       fs: float,
-                       bad_channels: Sequence[int],
-                       channel_map: np.ndarray,
-                       fname: Union[str, Path],
-                       missing_channels: Optional[Sequence[int]] = None,
-                       ) -> bool:
+    def _save_raw_data(
+        self,
+        data: np.ndarray,
+        fs: float,
+        bad_channels: Sequence[int],
+        channel_map: np.ndarray,
+        fname: str | Path,
+        missing_channels: Sequence[int] | None = None,
+    ) -> bool:
         """Save raw data and metadata to an HDF5 file.
 
         Args:
@@ -916,37 +1015,44 @@ class rhdLoader:
         Returns:
             True if the HDF5 file was written successfully, False otherwise.
         """
-        save_path = self.out_dir / f'sub-{self.subject}' / fname
-        logger.info(f'Saving raw data to {save_path}...')
+        save_path = self.out_dir / f"sub-{self.subject}" / fname
+        logger.info(f"Saving raw data to {save_path}...")
         try:
-            with h5py.File(save_path, 'w') as hf:
-                hf.create_dataset('data', data=data)
-                hf.create_dataset('fs', data=fs)
-                hf.create_dataset('bad_channels', data=bad_channels)
-                hf.create_dataset('channel_map', data=channel_map)
+            with h5py.File(save_path, "w") as hf:
+                hf.create_dataset("data", data=data)
+                hf.create_dataset("fs", data=fs)
+                hf.create_dataset("bad_channels", data=bad_channels)
+                hf.create_dataset("channel_map", data=channel_map)
                 if missing_channels is not None:
-                    hf.create_dataset('missing_channels',
-                                      data=list(missing_channels))
-            logger.info('...raw data saved successfully.')
+                    hf.create_dataset(
+                        "missing_channels", data=list(missing_channels)
+                    )
+            logger.info("...raw data saved successfully.")
             return True
-        except Exception as e:
-            logger.error(f'Error saving raw data: {e}')
-            print('Failed to save raw data. Error written to log.')
+        except Exception as e:  # noqa: BLE001
+            logger.error(f"Error saving raw data: {e}")
+            print("Failed to save raw data. Error written to log.")
             return False
 
     def _mic_wav_path(self) -> Path:
         """Return the path to the saved RHD microphone WAV for this subject."""
-        return (self.out_dir / f'sub-{self.subject}' /
-                f'sub-{self.subject}_mic.wav')
+        return (
+            self.out_dir
+            / f"sub-{self.subject}"
+            / f"sub-{self.subject}_mic.wav"
+        )
 
     def _mic_ext_wav_path(self) -> Path:
         """Return the path to an optional external microphone WAV."""
-        return (self.out_dir / f'sub-{self.subject}' /
-                f'sub-{self.subject}_micExt.wav')
+        return (
+            self.out_dir
+            / f"sub-{self.subject}"
+            / f"sub-{self.subject}_micExt.wav"
+        )
 
     def _allblocks_wav_path(self) -> Path:
         """Return the path to the all-blocks microphone WAV for MFA."""
-        return self.out_dir / f'sub-{self.subject}' / 'allblocks.wav'
+        return self.out_dir / f"sub-{self.subject}" / "allblocks.wav"
 
     def _save_mic_wav(self, mic: np.ndarray, fs: float) -> bool:
         """Save the board-ADC microphone trace as a WAV file.
@@ -959,17 +1065,17 @@ class rhdLoader:
             True on success, False on failure.
         """
         save_path = self._mic_wav_path()
-        logger.info(f'Saving microphone data to {save_path}...')
+        logger.info(f"Saving microphone data to {save_path}...")
         try:
             wavfile.write(save_path, int(fs), mic.astype(DATA_TYPE))
-            logger.info('...microphone data saved successfully.')
+            logger.info("...microphone data saved successfully.")
             return True
-        except Exception as e:
-            logger.error(f'Error saving microphone data: {e}')
-            print('Failed to save microphone data. Error written to log.')
+        except Exception as e:  # noqa: BLE001
+            logger.error(f"Error saving microphone data: {e}")
+            print("Failed to save microphone data. Error written to log.")
             return False
 
-    def _load_allblocks(self) -> Tuple[np.ndarray, float]:
+    def _load_allblocks(self) -> tuple[np.ndarray, float]:
         """Load the all-blocks microphone WAV.
 
         Returns:
@@ -981,15 +1087,14 @@ class rhdLoader:
         wav_path = self._allblocks_wav_path()
         if not wav_path.exists():
             raise FileNotFoundError(
-                f'{wav_path.name} not found in {wav_path.parent}. '
-                'Run load_data() first.')
+                f"{wav_path.name} not found in {wav_path.parent}. "
+                "Run load_data() first."
+            )
         fs, mic = wavfile.read(wav_path)
         mic = mic[:, 0] if mic.ndim > 1 else mic
         return mic.astype(DATA_TYPE), float(fs)
 
-    def _save_rhd_misc_data(
-        self, data: np.ndarray, fname: Union[str, Path]
-    ) -> bool:
+    def _save_rhd_misc_data(self, data: np.ndarray, fname: str | Path) -> bool:
         """Save miscellaneous RHD arrays as numpy .npy files.
 
         Args:
@@ -999,18 +1104,18 @@ class rhdLoader:
         Returns:
             True on success, False on failure.
         """
-        save_path = self.out_dir / f'sub-{self.subject}' / fname
-        logger.info(f'Saving RHD misc data to {save_path}...')
+        save_path = self.out_dir / f"sub-{self.subject}" / fname
+        logger.info(f"Saving RHD misc data to {save_path}...")
         try:
             np.save(save_path, data)
-            logger.info('...RHD misc data saved successfully.')
+            logger.info("...RHD misc data saved successfully.")
             return True
-        except Exception as e:
-            logger.error(f'Error saving RHD misc data: {e}')
-            print('Failed to save RHD misc data. Error written to log.')
+        except Exception as e:  # noqa: BLE001
+            logger.error(f"Error saving RHD misc data: {e}")
+            print("Failed to save RHD misc data. Error written to log.")
             return False
 
-    def _get_impedance_magnitudes(self, data: Dict[str, Any]) -> np.ndarray:
+    def _get_impedance_magnitudes(self, data: dict[str, Any]) -> np.ndarray:
         """Extract impedance magnitude values from raw RHD metadata.
 
         Args:
@@ -1020,15 +1125,19 @@ class rhdLoader:
         Returns:
             1D numpy array of impedance magnitudes (one per channel).
         """
-        impedance_mag = np.array([
-            data['amplifier_channels'][iChan]['electrode_impedance_magnitude']
-            for iChan in range(len(data['amplifier_channels']))
-        ])
+        impedance_mag = np.array(
+            [
+                data["amplifier_channels"][iChan][
+                    "electrode_impedance_magnitude"
+                ]
+                for iChan in range(len(data["amplifier_channels"]))
+            ]
+        )
         return impedance_mag
 
     def _get_high_impedance_channels(
         self, impedance: np.ndarray, threshold: float = 1e6
-    ) -> List[int]:
+    ) -> list[int]:
         """Return list of 0-indexed channels with impedance above threshold.
 
         Args:
@@ -1055,24 +1164,37 @@ class rhdLoader:
         Raises:
             ValueError: If sampling frequency cannot be determined.
         """
-        if hasattr(self, 'fs'):
+        if hasattr(self, "fs"):
             return self.fs
-        elif (self.out_dir / f'sub-{self.subject}' /
-              f'sub-{self.subject}_raw.h5').exists():
-            with h5py.File(self.out_dir / f'sub-{self.subject}' /
-                           f'sub-{self.subject}_raw.h5', 'r') as hf:
-                self.fs = hf['fs'][()]
+        elif (
+            self.out_dir / f"sub-{self.subject}" / f"sub-{self.subject}_raw.h5"
+        ).exists():
+            with h5py.File(
+                self.out_dir
+                / f"sub-{self.subject}"
+                / f"sub-{self.subject}_raw.h5",
+                "r",
+            ) as hf:
+                self.fs = hf["fs"][()]
             return self.fs
-        elif (self.out_dir / f'sub-{self.subject}' /
-              f'sub-{self.subject}_raw.edf').exists():
+        elif (
+            self.out_dir
+            / f"sub-{self.subject}"
+            / f"sub-{self.subject}_raw.edf"
+        ).exists():
             raw = mne.io.read_raw_edf(
-                self.out_dir / f'sub-{self.subject}' /
-                f'sub-{self.subject}_raw.edf', preload=False)
-            self.fs = raw.info['sfreq']
-            return raw.info['sfreq']
+                self.out_dir
+                / f"sub-{self.subject}"
+                / f"sub-{self.subject}_raw.edf",
+                preload=False,
+            )
+            self.fs = raw.info["sfreq"]
+            return raw.info["sfreq"]
         else:
-            raise ValueError('Sampling frequency not found. Please load data'
-                             ' first to determine fs.')
+            raise ValueError(
+                "Sampling frequency not found. Load data first "
+                "to determine fs."
+            )
 
     def _process_mfa_output(self) -> None:
         """Move MFA output token files from MFA subdirectory into subject dir.
@@ -1080,18 +1202,22 @@ class rhdLoader:
         The function attempts to move a small set of known MFA output files
         (stim/resp words and phones). Missing files are logged as warnings.
         """
-        subj_dir = self.out_dir / f'sub-{self.subject}'
-        mfa_dir = subj_dir / 'mfa'
-        files_to_move = ['mfa_stim_words.txt', 'mfa_stim_phones.txt',
-                         'mfa_resp_words.txt', 'mfa_resp_phones.txt']
+        subj_dir = self.out_dir / f"sub-{self.subject}"
+        mfa_dir = subj_dir / "mfa"
+        files_to_move = [
+            "mfa_stim_words.txt",
+            "mfa_stim_phones.txt",
+            "mfa_resp_words.txt",
+            "mfa_resp_phones.txt",
+        ]
         for file_name in files_to_move:
             src_path = mfa_dir / file_name
             dst_path = subj_dir / file_name
             if src_path.exists():
                 shutil.move(src_path, dst_path)
-                logger.info(f'Moved {file_name} to subject directory.')
+                logger.info(f"Moved {file_name} to subject directory.")
             else:
-                logger.warning(f'{file_name} not found in MFA directory.')
+                logger.warning(f"{file_name} not found in MFA directory.")
 
     def _get_out_dir(self) -> Path:
         """Return the default BIDS processing output directory under Box.
@@ -1102,7 +1228,7 @@ class rhdLoader:
         """
         # get path to BIDS processing folder on Box
         user_home = Path.home()
-        box_dir = user_home / r'Box\CoganLab\Data\Micro\BIDS_processing'
+        box_dir = user_home / r"Box\CoganLab\Data\Micro\BIDS_processing"
         return box_dir
 
     def _get_stim_dir(self) -> Path:
@@ -1113,38 +1239,45 @@ class rhdLoader:
             referenced by trial information.
         """
         user_home = Path.home()
-        stim_dir = user_home / r'Box\CoganLab\ECoG_Task_Data\Stim'
+        stim_dir = user_home / r"Box\CoganLab\ECoG_Task_Data\Stim"
         return stim_dir
 
-    def _make_subj_dir(self, base_dir: Union[str, Path]) -> None:
+    def _make_subj_dir(self, base_dir: str | Path) -> None:
         """Create the subject directory and attach a file logging handler.
 
         Args:
             base_dir: Base directory under which to create the subject folder.
         """
         # create directiry for subject if it doesn't exist
-        subj_dir = Path(base_dir) / f'sub-{self.subject}'
+        subj_dir = Path(base_dir) / f"sub-{self.subject}"
         subj_dir.mkdir(parents=True, exist_ok=True)
 
         # create new logging file in subject directory or append to existing
-        log_file = subj_dir / 'BIDS_processing.log'
-        file_handler = logging.FileHandler(log_file, mode='a')
+        log_file = subj_dir / "BIDS_processing.log"
+        file_handler = logging.FileHandler(log_file, mode="a")
         file_handler.setLevel(logging.INFO)
-        formatter = logging.Formatter('%(asctime)s - %(levelname)s - '
-                                      '%(message)s')
+        formatter = logging.Formatter(
+            "%(asctime)s - %(levelname)s - %(message)s"
+        )
         file_handler.setFormatter(formatter)
         logger.addHandler(file_handler)
 
-        logger.info('-' * 100)
-        logger.info(f'Subject directory set to: {subj_dir}')
+        logger.info("-" * 100)
+        logger.info(f"Subject directory set to: {subj_dir}")
 
 
-def main(data_dir, subject, fileIDs=None, array_type='None',
-         task='lexical_repeat_intraop'):
-    loader = rhdLoader(subject, data_dir, fileIDs=fileIDs,
-                       array_type=array_type)
+def main(
+    data_dir,
+    subject,
+    fileIDs=None,
+    array_type="None",
+    task="lexical_repeat_intraop",
+):
+    loader = rhdLoader(
+        subject, data_dir, fileIDs=fileIDs, array_type=array_type
+    )
     loader.load_data()
     loader.make_cue_events()
     loader.run_mfa(task_name=task)
     print(loader.create_trials_dict())
-    print('RHD data loaded successfully.')
+    print("RHD data loaded successfully.")

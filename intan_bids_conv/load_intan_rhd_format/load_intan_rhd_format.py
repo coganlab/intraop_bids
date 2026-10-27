@@ -10,16 +10,18 @@ import sys
 import time
 
 import matplotlib.pyplot as plt
-
-from load_intan_rhd_format.intanutil.header import (read_header,
-                              header_to_result)
-from load_intan_rhd_format.intanutil.data import (calculate_data_size,
-                            read_all_data_blocks,
-                            check_end_of_file,
-                            parse_data,
-                            data_to_result)
+from load_intan_rhd_format.intanutil.data import (
+    calculate_data_size,
+    check_end_of_file,
+    data_to_result,
+    parse_data,
+    read_all_data_blocks,
+)
 from load_intan_rhd_format.intanutil.filter import apply_notch_filter
-
+from load_intan_rhd_format.intanutil.header import (
+    header_to_result,
+    read_header,
+)
 
 
 def read_data(filename):
@@ -33,14 +35,14 @@ def read_data(filename):
     tic = time.time()
 
     # Open file for reading.
-    with open(filename, 'rb') as fid:
-
+    with open(filename, "rb") as fid:
         # Read header and summarize its contents to console.
         header = read_header(fid)
 
         # Calculate how much data is present and summarize to console.
-        data_present, filesize, num_blocks, num_samples = (
-            calculate_data_size(header, filename, fid))
+        data_present, filesize, num_blocks, num_samples = calculate_data_size(
+            header, filename, fid
+        )
 
         # If .rhd file contains data, read all present data blocks into 'data'
         # dict, and verify the amount of data read.
@@ -68,39 +70,39 @@ def read_data(filename):
         data = []
 
     # Report how long read took.
-    print('Done!  Elapsed time: {0:0.1f} seconds'.format(time.time() - tic))
+    print(f"Done!  Elapsed time: {time.time() - tic:0.1f} seconds")
 
     # Return 'result' dict.
     return result
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     a = read_data(sys.argv[1])
     print(a)
 
     fig, ax = plt.subplots(7, 1)
-    ax[0].set_ylabel('Amp')
-    ax[0].plot(a['t_amplifier'], a['amplifier_data'][0, :])
+    ax[0].set_ylabel("Amp")
+    ax[0].plot(a["t_amplifier"], a["amplifier_data"][0, :])
     ax[0].margins(x=0, y=0)
 
-    ax[1].set_ylabel('Aux')
-    ax[1].plot(a['t_aux_input'], a['aux_input_data'][6, :])
+    ax[1].set_ylabel("Aux")
+    ax[1].plot(a["t_aux_input"], a["aux_input_data"][6, :])
     ax[1].margins(x=0, y=0)
 
     # ax[2].set_ylabel('Vdd')
     # ax[2].plot(a['t_supply_voltage'], a['supply_voltage_data'][0, :])
     # ax[2].margins(x=0, y=0)
 
-    ax[3].set_ylabel('ADC')
-    ax[3].plot(a['t_board_adc'], a['board_adc_data'][0, :])
+    ax[3].set_ylabel("ADC")
+    ax[3].plot(a["t_board_adc"], a["board_adc_data"][0, :])
     ax[3].margins(x=0, y=0)
 
-    ax[4].set_ylabel('Digin')
-    ax[4].plot(a['t_dig'], a['board_dig_in_data'][0, :])
+    ax[4].set_ylabel("Digin")
+    ax[4].plot(a["t_dig"], a["board_dig_in_data"][0, :])
     ax[4].margins(x=0, y=0)
 
-    ax[5].set_ylabel('Digout')
-    ax[5].plot(a['t_dig'], a['board_dig_out_data'][0, :])
+    ax[5].set_ylabel("Digout")
+    ax[5].plot(a["t_dig"], a["board_dig_out_data"][0, :])
     ax[5].margins(x=0, y=0)
 
     # ax[6].set_ylabel('Temp')

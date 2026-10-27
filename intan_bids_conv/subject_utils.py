@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import re
 
-_BASE_SUBJECT_PATTERN = re.compile(r'^[A-Za-z]+\d+')
+_BASE_SUBJECT_PATTERN = re.compile(r"^[A-Za-z]+\d+")
 
 
 def base_subject_id(subject: str) -> str:
@@ -28,14 +28,14 @@ def base_subject_id(subject: str) -> str:
     'S84'
     """
     label = subject.strip()
-    if label.lower().startswith('sub-'):
+    if label.lower().startswith("sub-"):
         label = label[4:]
 
     match = _BASE_SUBJECT_PATTERN.match(label)
     if match is None:
         raise ValueError(
             f"Cannot extract base subject ID from {subject!r}. "
-            'Expected format: letters followed by digits, with an optional '
-            'run suffix (e.g. S84, S84a).',
+            "Expected format: letters followed by digits, with an optional "
+            "run suffix (e.g. S84, S84a).",
         )
     return match.group(0)
