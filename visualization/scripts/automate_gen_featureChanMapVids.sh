@@ -1,10 +1,14 @@
 #!/bin/bash
 
-bids_root="~/cworkspace/BIDS_1.0_Lexical_µECoG/BIDS"
-task="lexical"
-subj_arr=("S86")
-# subj_arr=("S30" "S41" "S45" "S47" "S51" "S52" "S53" "S55" "S56" "S63" "S67" "S73" "S74" "S75" "S76" "S78" "S81" "S82" "S83")
-# subj_arr=("S30" "S41" "S45" "S47" "S51" "S52" "S53" "S55" "S56" "S63" "S67" "S73" "S74" "S75" "S76" "S78" "S81")
+# bids_root="~/cworkspace/BIDS_1.0_Lexical_µECoG/BIDS"
+# task="lexical"
+# subj_arr=("S84a" "S84b")
+# # subj_arr=("S30" "S41" "S45" "S47" "S51" "S52" "S53" "S55" "S56" "S63" "S67" "S73" "S74" "S75" "S76" "S78" "S81" "S82" "S83" "S86")
+# # subj_arr=("S30" "S41" "S45" "S47" "S51" "S52" "S53" "S55" "S56" "S63" "S67" "S73" "S74" "S75" "S76" "S78" "S81")
+
+bids_root="~/cworkspace/BIDS_1.0_Sentence_µECoG/BIDS"
+task="sentence"
+subj_arr=("S91")
 
 task_period="[perception,production]"
 features="[high_gamma,spike_band]"
