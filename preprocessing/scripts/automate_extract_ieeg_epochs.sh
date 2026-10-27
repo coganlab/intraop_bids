@@ -24,17 +24,18 @@ features="[high_gamma,spike_band]"
 # features="[high_gamma]"
 # features="[spike_band]"
 # features="[delta,theta,alpha,beta,low_gamma]"
-# task_period="[perception,production]"
+task_period="[perception,production]"
 # task_period="perception"
-task_period="production"
+# task_period="production"
+# task_period="delay"
 
 # useSig=true  # leave this lower case
 useSig=false  # leave this lower case
 sig_channels_method="tpc"
 
 # derivative_name=null
-# derivative_name = "phonemeLevel"
-derivative_name="wordLevel"
+derivative_name="phonemeLevel"
+# derivative_name="wordLevel"
 
 # Spatial-average mode: when spatialAvg=true, this script submits one job
 # per contact size in spatialAvgContactSizes; each job loads the matching
@@ -48,6 +49,13 @@ spatialAvg=false  # leave this lower case
 spatialAvgContactSizes=(2 3 4 5 6 7 8 9 10 11 12 13 14 15 16)
 # spatialAvgContactSizes=(2)
 
+mem="128G"
+if [ "${derivative_name}" == "wordLevel" ]; then
+    mem="256G"
+elif [ "${derivative_name}" == "phonemeLevel" ]; then
+    mem="512G"
+fi
+
 
 for subject in "${subj_arr[@]}"; do
     if [[ "${spatialAvg}" == "true" ]]; then
@@ -55,7 +63,8 @@ for subject in "${subj_arr[@]}"; do
             echo "----------------------------------------"
             echo "Creating spatial-avg processing job for ${subject} (contact_size=${contact_size})"
             job_name="${subject}_extract_ieeg_epochs_sig${useSig}_SA${contact_size}"
-            sbatch -J "${job_name}" run_extract_ieeg_epochs.sh \
+            echo "Job name: ${job_name}"
+            sbatch -J "${job_name}" --mem="${mem}" run_extract_ieeg_epochs.sh \
                 -s "${subject}" -b "${bids_root}" -t "${task}" \
                 -f "${features}" -p "${task_period}" \
                 -u "${useSig}" -d "${derivative_name}" \
@@ -71,7 +80,8 @@ for subject in "${subj_arr[@]}"; do
             deriv_suffix="_${derivative_name}"
         fi
         job_name="${subject}_extract_ieeg_epochs_sig${useSig}${deriv_suffix}"
-        sbatch -J "${job_name}" run_extract_ieeg_epochs.sh \
+        echo "Job name: ${job_name}"
+        sbatch -J "${job_name}" --mem="${mem}" run_extract_ieeg_epochs.sh \
             -s "${subject}" -b "${bids_root}" -t "${task}" \
             -f "${features}" -p "${task_period}" \
             -u "${useSig}" -d "${derivative_name}" \
