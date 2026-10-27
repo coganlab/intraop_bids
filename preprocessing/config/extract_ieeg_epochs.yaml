@@ -44,7 +44,8 @@ features:
 # phoneme_level: true
 
 # Derivative name specification for loading and output (replaces phoneme_level to accept more derivative types)
-derivative_name: phonemeLevel
+derivative_name: null
+# derivative_name: phonemeLevel
 
 # Spatial-average mode: when enabled, the raw input is loaded from the
 # derivatives/spatialAvg/ recording produced by spatial_avg_raw.py
