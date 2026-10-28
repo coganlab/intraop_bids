@@ -33,8 +33,8 @@ twMax=1
 
 # task_periods=("production" "perception")
 task_periods=("production")
-norm_type="MeanSub"
-# norm_type="Zscore"
+# norm_type="MeanSub"
+norm_type="Zscore"
 suffix="highGamma"
 # suffix="spikeBand"
 extension=".fif"
