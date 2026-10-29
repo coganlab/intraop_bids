@@ -254,8 +254,8 @@ class crossPtDecoder_twSepAlign(crossPtDecoder):
         cache = {}
         for i, (X, y, y_align) in enumerate(self.cross_pt_data):
             # impute nans in data with channel means
-            fill_values = compute_channel_means(X)
-            X = impute_nans(X, fill_values)
+            fill_means, fill_stds = compute_fill_values(X)
+            X = impute_nans(X, fill_means, fill_stds, noise_scale=0.1)
 
             t_data = self.get_time_range(X.shape[1])
             align_idx = self.get_time_idx(t_data, self.tw_align)
@@ -280,8 +280,8 @@ class crossPtDecoder_twSepAlign(crossPtDecoder):
         cross_pt_trials = [x.shape[0] for x, _, _ in self.cross_pt_data]
 
         # impute nans in data with channel means
-        self.fill_values = compute_channel_means(X)
-        X = impute_nans(X, self.fill_values)
+        self.fill_means, self.channel_stds = compute_fill_values(X)
+        X = impute_nans(X, self.fill_means, self.channel_stds, noise_scale=0.1)
 
         t_data = self.get_time_range(X.shape[1])
         align_idx = self.get_time_idx(t_data, self.tw_align)
@@ -309,8 +309,8 @@ class crossPtDecoder_twSepAlign(crossPtDecoder):
         X_algn_dr = []
         for (i, info), algn in zip(cache.items(), self.algns):
             X_src = self.cross_pt_data[i][0].copy()
-            fill_values_src = compute_channel_means(X_src)
-            X_src = impute_nans(X_src, fill_values_src)
+            fill_means_src, channel_stds_src = compute_fill_values(X_src)
+            X_src = impute_nans(X_src, fill_means_src, channel_stds_src)
 
             X_r = X_src[:, decode_idx, :].reshape(-1, X_src.shape[-1])
             X_dr = info["pca"].transform(X_r)
@@ -340,7 +340,8 @@ class crossPtDecoder_twSepAlign(crossPtDecoder):
 
     def preprocess_test(self, X):
         # imput test nans with training means
-        X = impute_nans(X, self.fill_values)
+        self.fill_means, self.channel_stds = compute_fill_values(X)
+        X = impute_nans(X, self.fill_means, self.channel_stds, noise_scale=0.1)
 
         t_data = self.get_time_range(X.shape[1])
         decode_idx = self.get_time_idx(t_data, self.tw_decode)
@@ -361,7 +362,7 @@ class crossPtDecoder_twSepAlign(crossPtDecoder):
         self.y_align = y_align
 
 
-def compute_channel_means(X):
+def compute_fill_values(X):
     """Compute the per-channel mean waveform for NaN imputation.
 
     Assumes input data is shaped (n_trials, n_times, n_channels). Channel means
@@ -377,21 +378,46 @@ def compute_channel_means(X):
         ndarray: Mean waveform of shape (n_times, n_channels).
     """
     with warnings.catch_warnings():
-        warnings.simplefilter('ignore', category=RuntimeWarning)
-        channel_means = np.nanmean(X, axis=0)  # mean over trials -> (n_times, n_channels)
-        time_mean = np.nanmean(channel_means, axis=1)  # mean over channels -> (n_times,)
-        global_mean = np.nanmean(X)  # mean over all trials, times, channels -> scalar
+        # Mean waveform across trials: (time, channels)
+        channel_means = np.nanmean(X, axis=0)
 
-        # replace all-nan timepoints with the global mean (e.g. fully-NaN channels)
+        # Time-varying mean across available channels: (time,)
+        time_mean = np.nanmean(channel_means, axis=1)
+
+        # Global fallback if all channels are missing at a time point
+        global_mean = np.nanmean(X)
+        if np.isnan(global_mean):
+            global_mean = 0.0
+
         time_mean = np.where(np.isnan(time_mean), global_mean, time_mean)
 
-        # replace all-nan channels with the time-varying mean across channels
-        means = np.where(np.isnan(channel_means), time_mean[:, None], channel_means)
+        # Fill entirely missing channels using the time-varying mean
+        fill_values = np.where(
+            np.isnan(channel_means),
+            time_mean[:, None],
+            channel_means,
+        )
 
-    return means
+        # Estimate variability around each channel's mean waveform.
+        # This prevents time-varying evoked responses from inflating the
+        # noise estimate.
+        residuals = X - channel_means[None, :, :]
+        channel_stds = np.nanstd(residuals, axis=(0, 1))
+
+        # Fallback for entirely missing channels
+        valid_stds = channel_stds[np.isfinite(channel_stds)]
+        fallback_std = np.mean(valid_stds) if valid_stds.size else 0.0
+
+        channel_stds = np.where(
+            np.isfinite(channel_stds),
+            channel_stds,
+            fallback_std,
+        )
+
+        return fill_values, channel_stds
 
 
-def impute_nans(X, fill_values):
+def impute_nans(X, fill_means, fill_stds=None, noise_scale=0.0):
     """Impute NaNs (bad channels/trials) with a provided mean waveform.
 
     Bad channels and bad trials are stored as NaN in the updated BIDS data.
@@ -403,21 +429,34 @@ def impute_nans(X, fill_values):
 
     Args:
         X (ndarray): Neural data with shape (n_trials, n_times, n_channels).
-        fill_values (ndarray): Mean waveform of shape (n_times, n_channels)
+        fill_means (ndarray): Mean waveform of shape (n_times, n_channels)
             broadcast across trials to fill NaNs.
+        fill_stds (ndarray): Standard deviations of the mean waveform of shape (n_channels,)
+            broadcast across trials to fill NaNs.
+        noise_scale (float): Scale of the noise to add to the imputed values.
 
     Returns:
         ndarray: Data with NaNs imputed (same shape as input).
     """
-    if not np.isnan(X).any():
-        return X
+    X_out = X.copy()
+    nan_mask = np.isnan(X_out)
 
-    if np.issubdtype(X.dtype, np.floating):
-        X = X.copy()
-    else:
-        X = X.astype(np.float32)
+    if not np.any(nan_mask):
+        return X_out
 
-    nan_mask = np.isnan(X)
-    fills = np.broadcast_to(fill_values, X.shape)
-    X[nan_mask] = fills[nan_mask]
-    return X
+    # Broadcast mean waveform and channel standard deviations
+    means = np.broadcast_to(fill_means[None, :, :], X_out.shape)
+    stds = np.broadcast_to(fill_stds[None, None, :], X_out.shape)
+
+    # Mean imputation
+    X_out[nan_mask] = means[nan_mask]
+
+    # Add noise only at imputed positions
+    if noise_scale > 0:
+        noise = np.random.normal(
+            loc=0,
+            scale=noise_scale * stds[nan_mask],
+        )
+        X_out[nan_mask] += noise
+
+    return X_out
