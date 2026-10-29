@@ -215,12 +215,19 @@ def load_align_data(bids_root, subject, phoneme_idx, tw=None, elec_rois=None,
         **kwargs)
     X = X.transpose(0, 2, 1)
 
-    _, y_align, _ = load_subject_data(
-        bids_root, subject, 1, n_phons, tw,
-        ps_root=ps_root, ps_subjects=ps_subjects, **kwargs)
-    if phoneme_idx == -1:
-        y_align = np.tile(y_align, (n_phons, 1)).T.flatten()
 
+    # TODO: make this support different alignment types (only works for sequences right now)
+    _, y_align, _ = load_subject_data(
+        bids_root, subject, -1, n_phons, tw,
+        ps_root=ps_root, ps_subjects=ps_subjects, **kwargs)
+    y_align = np.tile(y_align.reshape(-1,n_phons), (n_phons,1,1)).reshape(-1, n_phons, order='F')
+    y_align = np.array([''.join(ys.astype(str)) for ys in y_align], dtype=object)  # Convert to string labels for alignment sequences
+    # _, y_align, _ = load_subject_data(
+    #     bids_root, subject, 1, n_phons, tw,
+    #     ps_root=ps_root, ps_subjects=ps_subjects, **kwargs)
+    # if phoneme_idx == -1:
+    #     y_align = np.tile(y_align, (n_phons, 1)).T.flatten()
+    
     return X, y, y_align, tw_epoch
 
 
