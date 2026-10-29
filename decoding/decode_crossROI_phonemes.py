@@ -78,7 +78,6 @@ def load_roi_dataset(rois, patients, bids_root, phoneme_idx, tw,
 
     # Combine data on the channel axis (axis=1)
     X_merge, y_merge, y_align_merge = combine_patient_channels(X_list, y_list, y_align_list)
-    # y_merge = fill_missing_labels_from_seqs(y_merge, y_align_merge, n_phons)
     return X_merge, y_merge, y_align_merge, tw_epoch
 
 
@@ -140,25 +139,6 @@ def merge_on_nan(arrays):
     stacked = np.stack(arrays, axis=-1)
     merged = np.nanmean(stacked, axis=-1)  # Use nanmean to ignore NaNs
     return merged
-
-
-def fill_missing_labels_from_seqs(y, y_align, nPhons):
-    """Fill in missing phoneme labels (NaNs) in y based on the alignment labels
-    (y_align). y_align corresponds to phoneme sequences, while y contains the 
-    individual phoneme labels."""
-    for label in np.unique(y_align):
-        mask = y_align == label
-        if np.any(mask):
-            # Get the true phoneme labels for this sequence as non-NaNs
-            # corresponding to current phoneme sequence. There has to be at
-            # least nPhons non-NaN labels for each sequence, otherwise the 
-            # the sequence wouldn't be here in the first place
-            true_labels = y[~pd.isna(y) & mask]
-            constituent_labels = true_labels[:nPhons] # Grab phonemes for single sequence
-
-            # Fill in NaNs in y for this sequence with the true labels
-            y[mask] = np.tile(constituent_labels, int(np.sum(mask) / nPhons))[:np.sum(mask)]
-    return y
 
 
 def load_subject_data(bids_root, subject, phoneme_idx, n_phons=3,

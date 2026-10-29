@@ -78,7 +78,6 @@ def load_roi_dataset(rois, patients, bids_root, phoneme_idx, tw,
 
     # Combine data on the channel axis (axis=1)
     X_merge, y_merge, y_align_merge = combine_patient_channels(X_list, y_list, y_align_list)
-    # y_merge = fill_missing_labels_from_seqs(y_merge, y_align_merge, n_phons)
     return X_merge, y_merge, y_align_merge, tw_epoch
 
 
@@ -142,25 +141,6 @@ def merge_on_nan(arrays):
     return merged
 
 
-def fill_missing_labels_from_seqs(y, y_align, nPhons):
-    """Fill in missing phoneme labels (NaNs) in y based on the alignment labels
-    (y_align). y_align corresponds to phoneme sequences, while y contains the 
-    individual phoneme labels."""
-    for label in np.unique(y_align):
-        mask = y_align == label
-        if np.any(mask):
-            # Get the true phoneme labels for this sequence as non-NaNs
-            # corresponding to current phoneme sequence. There has to be at
-            # least nPhons non-NaN labels for each sequence, otherwise the 
-            # the sequence wouldn't be here in the first place
-            true_labels = y[~pd.isna(y) & mask]
-            constituent_labels = true_labels[:nPhons] # Grab phonemes for single sequence
-
-            # Fill in NaNs in y for this sequence with the true labels
-            y[mask] = np.tile(constituent_labels, int(np.sum(mask) / nPhons))[:np.sum(mask)]
-    return y
-
-
 def load_subject_data(bids_root, subject, phoneme_idx, n_phons=3,
                       tw=None, ps_root=None, ps_subjects=None,
                       nan_bad_chans=True, elec_rois=None, **kwargs):
@@ -206,104 +186,6 @@ def load_align_data(bids_root, subject, phoneme_idx, tw=None, elec_rois=None,
     #     y_align = np.tile(y_align, (n_phons, 1)).T.flatten()
 
     return X, y, y_align, tw_epoch
-
-
-def load_cross_data(rois, patients, bids_root, phoneme_idx, tw=None, **kwargs):
-    """Load data for all cross-patient patients."""
-    X_list, y_list, y_align_list = [], [], []
-    for roi in rois:
-        print(f"Loading ROI data from ROI {roi}...")
-        X, y, y_align, _ = load_roi_dataset(roi, patients, bids_root,
-                                            phoneme_idx, tw, **kwargs)
-        if 0 in X.shape:
-            print(f"Warning: No data found for ROI {roi}. Skipping.")
-            continue
-        X_list.append(X)
-        y_list.append(y)
-        y_align_list.append(y_align)
-    return X_list, y_list, y_align_list
-
-
-def run_fold(train_idx, test_idx, X, y, y_align, model, aligner):
-    """Run one CV fold and return predictions + test indices."""
-    X_train, X_test = X[train_idx], X[test_idx]
-    y_train, _ = y[train_idx], y[test_idx]
-    y_align_train = y_align[train_idx]
-
-    if aligner is not None:
-        model.set_align_labels(y_align_train)
-
-    model.fit(X_train, y_train)
-    y_pred = model.predict(X_test)
-    return test_idx, y_pred
-
-
-def aligned_decode(X_tar, y_tar, y_align_tar=None, aligner=None,
-                   X_src=None, y_src=None, y_align_src=None,
-                   full_tw=None, align_tw=None, decode_tw=None,
-                   n_folds=10, n_iter=10, model=None, tar_in_train=True,
-                   n_comp_align=0.9, n_comp_decode=0.8, n_jobs=-1):
-    if full_tw is None:
-        full_tw = [-1, 1]
-    if align_tw is None:
-        align_tw = [-1, 1]
-    if decode_tw is None:
-        decode_tw = [-0.5, 0.5]
-
-    if model is None:
-        clf = SVC(kernel='rbf', class_weight='balanced')
-        model = make_pipeline(
-            NaNImputer3D(),
-            DimRedReshape(PCA, n_components=n_comp_decode), clf)
-
-    cv = StratifiedKFold(n_splits=n_folds, shuffle=True)
-    try:
-        list(cv.split(X_tar, y_tar))
-    except ValueError:
-        cv = KFold(n_splits=n_folds, shuffle=True)
-
-    if y_align_tar is None:
-        y_align_tar = y_tar
-    if X_src is not None and y_align_src is None:
-        y_align_src = y_src
-
-    if X_src is not None and y_src is not None:
-        pool = True
-        if aligner is None:
-            model = crossPtDecoder_sepDimRed(
-                list(zip(X_src, y_src, y_align_src)),
-                model, tar_in_train=tar_in_train, n_comp=n_comp_align)
-        else:
-            model = crossPtDecoder_twSepAlign(
-                list(zip(X_src, y_src, y_align_src)),
-                model, aligner, full_tw, align_tw, decode_tw,
-                tar_in_train=tar_in_train, n_comp=n_comp_align)
-    else:
-        pool = False
-
-    y_pred_all = np.zeros((n_iter, len(y_tar)))
-    scores = np.zeros(n_iter)
-
-    for i in tqdm(range(n_iter), desc='Decoding iterations'):
-        if pool:
-            results = Parallel(n_jobs=n_jobs)(
-                delayed(run_fold)(train_idx, test_idx, X_tar, y_tar,
-                                  y_align_tar, clone(model), aligner)
-                for train_idx, test_idx in cv.split(X_tar, y_tar))
-            y_pred_iter = np.zeros(len(y_tar))
-            for test_idx, y_pred in results:
-                y_pred_iter[test_idx] = y_pred
-        else:
-            from sklearn.model_selection import cross_val_predict
-            y_pred_iter = cross_val_predict(model, X_tar, y_tar, cv=cv,
-                                            n_jobs=n_jobs)
-
-        scores[i] = balanced_accuracy_score(y_tar, y_pred_iter)
-        logger.info(f'Iteration {i + 1}/{n_iter} - '
-                     f'balanced accuracy: {scores[i]:.4f}')
-        y_pred_all[i, :] = y_pred_iter
-
-    return scores, y_pred_all
 
 
 def build_output_path(cfg, tw_epoch, roi, results_root, output_suffix=None):
