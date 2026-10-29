@@ -55,8 +55,14 @@ extension=".fif"
 
 output_suffix=""
 
-datatype="epoch(band)(power)(sig)"
-# datatype="epoch(band)(power)"
+# datatype="epoch(band)(power)(sig)"
+datatype="epoch(band)(power)"
+
+mem=200G
+if [[ $datatype == *"sig"* ]]; then
+    mem=100G
+fi
+
 
 tar_subj_str=$(join , "${tar_subj_arr[@]}")
 src_subj_str=$(join , "${src_subj_arr[@]}")
@@ -70,7 +76,7 @@ for roi in "${target_rois[@]}"; do
             echo "Creating cross-ROI decoding job from ROIS ${src_roi_str} to ROI ${roi}, task_period ${task_period}, phonemeIdx ${phon}"   
             job_name="${roi}_${task_period}_${phon}_${poolTask}_decode_crossROI"
             echo $job_name
-            sbatch -J $job_name run_crossROI_decoder.sh \
+            sbatch -J $job_name --mem=$mem run_crossROI_decoder.sh \
                 -r ${roi} -c ${src_roi_str} -s ${tar_subj_str} -j ${src_subj_str}\
                 -b "${bids_root}" -t ${task} \
                 -p ${phon} -f ${nFolds} -i ${nIter} \

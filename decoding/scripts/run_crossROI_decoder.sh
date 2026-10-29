@@ -3,7 +3,7 @@
 #SBATCH -e /hpc/home/zms14/cworkspace/jobs/decode_crossROI/%j.error
 #SBATCH -p common,scavenger,coganlab-gpu
 #SBATCH -c 20
-#SBATCH --mem=64G
+#SBATCH --mem=256G
 
 # ----------------------------
 # Load environment
