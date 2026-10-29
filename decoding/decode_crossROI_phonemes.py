@@ -15,8 +15,6 @@ from sklearn.base import clone
 from tqdm import tqdm
 from joblib import Parallel, delayed
 from mne_bids import BIDSPath
-from ieeg.decoding.decode import sample_fold
-from ieeg.arrays.api import array_namespace
 
 # sys.path.insert(0, str(Path(__file__).resolve().parent))
 
@@ -50,11 +48,6 @@ TARGET_EVENT_ID = {
 def load_dataset(pt, bids_root, phoneme_idx, tw, elec_rois=None,
                  nan_bad_chans=True, n_phons=3, ps_subjects=None,
                  ps_root=None, **kwargs):
-    # if pt[0].lower() == 'd':
-    #     return load_seeg_dataset(pt, bids_root, 'seq', tw,
-    #                                 nan_bad_chans=nan_bad_chans, **kwargs)
-    # else:
-    #     return load_align_data(bids_root, pt, phoneme_idx, tw=tw, **kwargs)
 
     # can use uECoG data processing now that phoneme level sEEG is available
     return load_align_data(bids_root, pt, phoneme_idx, tw=tw, n_phons=n_phons,
@@ -203,6 +196,7 @@ def load_align_data(bids_root, subject, phoneme_idx, tw=None, elec_rois=None,
         **kwargs)
     X = X.transpose(0, 2, 1)
 
+    # TODO: make this support different alignment types (only works for sequences right now)
     _, y_align, _ = load_subject_data(
         bids_root, subject, -1, n_phons, tw,
         ps_root=ps_root, ps_subjects=ps_subjects, **kwargs)
@@ -219,9 +213,6 @@ def load_cross_data(rois, patients, bids_root, phoneme_idx, tw=None, **kwargs):
     X_list, y_list, y_align_list = [], [], []
     for roi in rois:
         print(f"Loading ROI data from ROI {roi}...")
-        # X, y, y_align, _ = load_align_data(
-        #     bids_root, subj, phoneme_idx, tw,
-        #     ps_root=ps_root, ps_subjects=ps_subjects, **kwargs)
         X, y, y_align, _ = load_roi_dataset(roi, patients, bids_root,
                                             phoneme_idx, tw, **kwargs)
         if 0 in X.shape:
@@ -235,14 +226,8 @@ def load_cross_data(rois, patients, bids_root, phoneme_idx, tw=None, **kwargs):
 
 def run_fold(train_idx, test_idx, X, y, y_align, model, aligner):
     """Run one CV fold and return predictions + test indices."""
-    # X_train, X_test = X[train_idx], X[test_idx]
-    # y_train, _ = y[train_idx], y[test_idx]
-    # y_align_train = y_align[train_idx]
-    xp = array_namespace(X)
-    uniq = xp.unique(y)
-    X_tot, y_train, y_test = sample_fold(train_idx, test_idx, X, y, uniq, 0, True, xp)
-    X_train = X_tot[:len(train_idx)]
-    X_test = X_tot[len(train_idx):]
+    X_train, X_test = X[train_idx], X[test_idx]
+    y_train, _ = y[train_idx], y[test_idx]
     y_align_train = y_align[train_idx]
 
     if aligner is not None:
@@ -341,7 +326,7 @@ def build_output_path(cfg, tw_epoch, decode_tw, target_roi, source_rois,
         return f"[{fmt[0]}{abs(tw[0]):.2g},{fmt[1]}{abs(tw[1]):.2g}]"
 
     sig_str = 'sig' if 'sig' in cfg.datatype else 'all'
-    roi_str = ','.join(source_rois) if isinstance(source_rois, (list, tuple)) else source_rois
+    roi_str = ','.join(source_rois) if (isinstance(source_rois, list) or OmegaConf.is_list(cfg.source_rois)) else source_rois
 
     phoneme_suffix = ('pAll' if cfg.phoneme_idx == -1
                       else f'p{cfg.phoneme_idx}')
@@ -354,7 +339,7 @@ def build_output_path(cfg, tw_epoch, decode_tw, target_roi, source_rois,
         desc += f"({output_suffix})"
     outpath = BIDSPath(
         root=results_root,
-        subject=cfg.patient,
+        subject=target_roi,
         task=cfg.task,
         datatype='decode(production)(cca)(crossROI)',
         description=desc,
@@ -440,7 +425,7 @@ def main(cfg: DictConfig) -> None:
         model=model, tar_in_train=True,
         n_comp_align=cfg.pca_variance_align,
         n_comp_decode=cfg.pca_variance_decode,
-        n_jobs=1,
+        n_jobs=-1,
     )
 
     decode_handler = decodeResultsBIDS(
@@ -452,7 +437,7 @@ def main(cfg: DictConfig) -> None:
     else:
         results_root = bids_root.parent / 'decoding(crossROI)'
 
-    outpath = build_output_path(cfg, tw_epoch, decode_tw, target_rois, source_rois,
+    outpath = build_output_path(cfg, tw_epoch, decode_tw, cfg.target_rois, cfg.source_rois,
                                 results_root, cfg.output_suffix)
     outpath.mkdir(exist_ok=True)
     logger.info(f'Saving results to {outpath.fpath}')

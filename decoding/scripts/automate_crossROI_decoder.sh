@@ -40,8 +40,8 @@ n_phons=3
 target_rois=("SMC")
 source_rois=("Auditory")
 
-nFolds=2
-nIter=2
+nFolds=20
+nIter=10
 twMin=-1
 twMax=1
 
@@ -55,8 +55,8 @@ extension=".fif"
 
 output_suffix=""
 
-# datatype="epoch(band)(power)(sig)"
-datatype="epoch(band)(power)"
+datatype="epoch(band)(power)(sig)"
+# datatype="epoch(band)(power)"
 
 tar_subj_str=$(join , "${tar_subj_arr[@]}")
 src_subj_str=$(join , "${src_subj_arr[@]}")
