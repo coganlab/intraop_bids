@@ -188,7 +188,7 @@ def load_align_data(bids_root, subject, phoneme_idx, tw=None, elec_rois=None,
     return X, y, y_align, tw_epoch
 
 
-def load_cross_data(rois, patients, bids_root, phoneme_idx, tw=None, **kwargs):
+def load_cross_data(rois, patients, bids_root, phoneme_idx, tw=None, random_data=False, **kwargs):
     """Load data for all cross-patient patients."""
     X_list, y_list, y_align_list = [], [], []
     for roi in rois:
@@ -198,6 +198,9 @@ def load_cross_data(rois, patients, bids_root, phoneme_idx, tw=None, **kwargs):
         if 0 in X.shape:
             print(f"Warning: No data found for ROI {roi}. Skipping.")
             continue
+        if random_data:
+            print(f"Generating random data for ROI {roi}...")
+            X = np.random.rand(*X.shape)
         X_list.append(X)
         y_list.append(y)
         y_align_list.append(y_align)
@@ -383,7 +386,7 @@ def main(cfg: DictConfig) -> None:
     logger.info(f'Loading cross-ROI data from subject(s) {cfg.source_patients} and ROIs {source_rois}...')
     X_src, y_src, y_align_src = load_cross_data(source_rois,
         cfg.source_patients, bids_root, cfg.phoneme_idx, tw,
-        n_phons=cfg.n_phons, **bids_kwargs)
+        n_phons=cfg.n_phons, random_data=cfg.random_data, **bids_kwargs)
     for X_cross, y_cross, y_align_cross in zip(X_src, y_src, y_align_src):
         logger.info(f'Cross-ROI data: X={X_cross.shape}, y={y_cross.shape},'
                     f' y_align={y_align_cross.shape}')
@@ -402,7 +405,7 @@ def main(cfg: DictConfig) -> None:
         X_src=X_src, y_src=y_src, y_align_src=y_align_src,
         full_tw=tw_epoch, align_tw=tw_epoch, decode_tw=decode_tw,
         n_folds=cfg.n_folds, n_iter=cfg.n_iter,
-        model=model, tar_in_train=True,
+        model=model, tar_in_train=cfg.tar_in_train,
         n_comp_align=cfg.pca_variance_align,
         n_comp_decode=cfg.pca_variance_decode,
         n_jobs=-1,

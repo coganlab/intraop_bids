@@ -41,6 +41,9 @@ suffix: highGamma
 extension: .fif
 datatype: "epoch(band)(power)"
 
+random_data: false
+tar_in_train: true
+
 
 # Decoding parameters
 n_folds: 20
@@ -57,6 +60,7 @@ time_window: null
 results_root: null
 
 output_suffix: null
+# output_suffix: randomSrcData
 # output_suffix: roiAud
 # output_suffix: roiSMC
 
