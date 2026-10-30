@@ -44,10 +44,10 @@ TARGET_EVENT_ID = {
 }
 
 
-def get_n_phons(subject, ps_subjects):
-    if subject in ps_subjects:
-        return 3
-    return 5
+# def get_n_phons(subject, ps_subjects):
+#     if subject in ps_subjects:
+#         return 3
+#     return 5
 
 
 def load_dataset(pt, bids_root, phoneme_idx, tw, elec_rois=None,
@@ -207,20 +207,25 @@ def load_align_data(bids_root, subject, phoneme_idx, tw=None, elec_rois=None,
                     n_phons=None, **kwargs):
     """Load subject data and compute alignment labels (phoneme-1 labels)."""
 
-    if n_phons is None:
-        n_phons = get_n_phons(subject, ps_subjects or [])
+
     X, y, tw_epoch = load_subject_data(
         bids_root, subject, phoneme_idx, n_phons, tw, elec_rois=elec_rois,
         ps_root=ps_root, ps_subjects=ps_subjects, nan_bad_chans=nan_bad_chans,
         **kwargs)
     X = X.transpose(0, 2, 1)
 
+    # TODO: make this support different alignment types (only works for sequences right now)
     _, y_align, _ = load_subject_data(
-        bids_root, subject, 1, n_phons, tw,
+        bids_root, subject, -1, n_phons, tw,
         ps_root=ps_root, ps_subjects=ps_subjects, **kwargs)
-    if phoneme_idx == -1:
-        y_align = np.tile(y_align, (n_phons, 1)).T.flatten()
-
+    y_align = np.tile(y_align.reshape(-1,n_phons), (n_phons,1,1)).reshape(-1, n_phons, order='F')
+    y_align = np.array([''.join(ys.astype(str)) for ys in y_align], dtype=object)  # Convert to string labels for alignment sequences
+    # _, y_align, _ = load_subject_data(
+    #     bids_root, subject, 1, n_phons, tw,
+    #     ps_root=ps_root, ps_subjects=ps_subjects, **kwargs)
+    # if phoneme_idx == -1:
+    #     y_align = np.tile(y_align, (n_phons, 1)).T.flatten()
+    
     return X, y, y_align, tw_epoch
 
 
@@ -235,7 +240,8 @@ def load_cross_data(bids_root, subjects, phoneme_idx, tw=None,
         #     ps_root=ps_root, ps_subjects=ps_subjects, **kwargs)
         X, y, y_align, _ = load_dataset(
             subj, bids_root, phoneme_idx, tw, ps_root=ps_root,
-            ps_subjects=ps_subjects, elec_rois=elec_rois, **kwargs)
+            ps_subjects=ps_subjects, elec_rois=elec_rois,
+            **kwargs)
         if 0 in X.shape:
             print(f"Warning: No data found for subject {subj}. Skipping.")
             continue
@@ -410,7 +416,7 @@ def main(cfg: DictConfig) -> None:
     #     ps_root=str(ps_root), ps_subjects=ps_subjects, **bids_kwargs)
     X_tar, y_tar, y_align_tar, tw_epoch = load_dataset(
         cfg.patient, bids_root, cfg.phoneme_idx, tw, elec_rois=rois,
-        **bids_kwargs)
+        n_phons=cfg.n_phons, **bids_kwargs)
     logger.info(f'Target data: X={X_tar.shape}, y={y_tar.shape}, '
                 f'y_align={y_align_tar.shape}, tw={tw_epoch}')
 
@@ -431,7 +437,8 @@ def main(cfg: DictConfig) -> None:
     logger.info(f'Loading cross-patient data for {other_subjects}...')
     X_src, y_src, y_align_src = load_cross_data(
         bids_root, other_subjects, cfg.phoneme_idx, tw, elec_rois=rois,
-        ps_root=str(ps_root), ps_subjects=ps_subjects, **bids_kwargs)
+        ps_root=str(ps_root), ps_subjects=ps_subjects, 
+        n_phons=cfg.n_phons, **bids_kwargs)
     for X_cross, y_cross, y_align_cross in zip(X_src, y_src, y_align_src):
         logger.info(f'Cross-patient data: X={X_cross.shape}, y={y_cross.shape},'
                     f' y_align={y_align_cross.shape}')
@@ -453,7 +460,7 @@ def main(cfg: DictConfig) -> None:
         model=model, tar_in_train=True,
         n_comp_align=cfg.pca_variance_align,
         n_comp_decode=cfg.pca_variance_decode,
-        n_jobs=1,
+        n_jobs=-1,
     )
 
     decode_handler = decodeResultsBIDS(

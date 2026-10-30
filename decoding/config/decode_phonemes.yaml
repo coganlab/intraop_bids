@@ -7,6 +7,15 @@ patient: ???
 task: ???
 # task: "phoneme"
 
+# ROI definitions (assuming APARC 2009)
+roi: null
+roi_dict:
+  Auditory: ["G_temp_sup-Plan_tempo", "G_temp_sup-Lateral", "G_temp_sup-Plan_polar", "S_temporal_sup", "S_temporal_transverse"]
+  SMC: ["G_precentral", "G_postcentral", "S_central"]
+hemi:
+  - "lh"
+  - "rh"
+
 phoneme_idx: -1    # -1 for all phonemes, 1..N for specific position
 # n_phons: 5
 n_phons: 3
@@ -35,22 +44,9 @@ time_window: [-0.5, 0.5]
 pca_variance: 0.8
 svm_kernel: rbf
 
-# ROI definitions (assuming APARC 2009)
-# rois:
-# - "G_temp_sup-G_T_transv"
-# - "G_temp_sup-Plan_tempo"
-# - "G_temp_sup-Lateral"
-# - "G_temp_sup-Plan_polar"
-# - "S_temporal_sup"
-# - "S_temporal_transverse"
-rois:
-- "G_precentral"
-- "G_postcentral"
-- "S_central"
-
-
 # Output (null = auto-derived from bids_root)
 results_root: null
 
+output_suffix: null
 # output_suffix: roiAud
-output_suffix: roiSMC
+# output_suffix: roiSMC

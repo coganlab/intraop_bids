@@ -36,9 +36,9 @@ subj_arr=("D0023" "D0024" "D0025" "D0028" "D0029" "D0031" "D0035" "D0040" "D0041
 # bids_root="/hpc/home/zms14/cworkspace/BIDS-1.4_Phoneme_sequencing/BIDS/derivatives/epoch(CAR)"
 bids_root="/hpc/home/zms14/cworkspace/BIDS-1.4_Phoneme_sequencing/BIDS/derivatives/epoch(phonemeLevel)(CAR)"
 # bids_root="/hpc/home/zms14/cworkspace/BIDS-1.4_Phoneme_sequencing/BIDS/derivatives/epoch(phonemeLevel)(bipolar)"
-phonemeIdx=(-1 1 2 3)
+# phonemeIdx=(-1 1 2 3)
 # phonemeIdx=(1)
-# phonemeIdx=(-1)
+phonemeIdx=(-1)
 nPhons=3
 task="PhonemeSequence"
 
@@ -49,13 +49,13 @@ chance=false
 twMin=-0.5
 twMax=0.5
 
-datatype="epoch(band)(power)(sig)"
-# datatype="epoch(band)(power)"
+# datatype="epoch(band)(power)(sig)"
+datatype="epoch(band)(power)"
 
-task_periods=("perception" "production")
-# task_periods=("production")
-norm_type="MeanSub"
-# description="Zscore"
+# task_periods=("perception" "production")
+task_periods=("production")
+# norm_type="MeanSub"
+norm_type="Zscore"
 suffix="highGamma"
 # suffix="spikeBand"
 # suffix='[highGamma,spikeBand]'

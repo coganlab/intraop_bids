@@ -66,6 +66,21 @@ def build_output_path(cfg, twEpoch, results_root, output_suffix=None):
     return outpath
 
 
+def get_ctx_rois(roi, hemi=None, roi_dict=None):
+    # default to both hemispheres if not specified
+    if hemi is None:
+        hemi = ('lh', 'rh')
+
+    if roi_dict is not None:
+        roi = roi_dict.get(roi, roi)
+
+    return {
+        f"ctx_{h}_{region}"
+        for h in hemi
+        for region in roi
+    }
+
+
 @hydra.main(version_base=None, config_path="config",
             config_name="decode_phonemes")
 def main(cfg: DictConfig) -> None:
@@ -80,15 +95,9 @@ def main(cfg: DictConfig) -> None:
     tw = (OmegaConf.to_container(cfg.time_window)
           if cfg.time_window is not None else [None, None])
 
-    # get cortical rois on both hemispheres
-    rois = cfg.rois
-    if rois is not None:
-        rois = {
-            f"ctx_{hemi}_{region}"
-            for hemi in ("lh", "rh")
-            for region in rois
-        }
-            print(f"Using ROIs: {rois}")
+    # get ROI labels
+    rois = get_ctx_rois(cfg.roi, cfg.hemi, cfg.roi_dict)
+    logger.info(f'Target ROI: specified {cfg.roi}, resolved {rois}')
 
     logger.info(f'Loading data for subject {cfg.patient}...')
     dataset = PhonemeDatasetBIDS(

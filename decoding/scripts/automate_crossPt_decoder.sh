@@ -41,6 +41,13 @@ extension=".fif"
 
 datatype="epoch(band)(power)(sig)"
 
+output_suffix="alignSeq"
+
+mem=256G
+if [[ $datatype == *"sig"* ]]; then
+    mem=256G
+fi
+
 for subject in "${subj_arr[@]}"; do
     for task_period in "${task_periods[@]}"; do
         description="${task_period}${norm_type}"
@@ -49,12 +56,12 @@ for subject in "${subj_arr[@]}"; do
             echo "Creating processing job for ${subject}, task_period ${task_period}, phonemeIdx ${phon}"
             job_name="${subject}_${task_period}_${phon}_${poolTask}_decode_crossPtTask"
             echo $job_name
-            sbatch -J $job_name run_crossPt_decoder.sh \
+            sbatch -J $job_name --mem=$mem run_crossPt_decoder.sh \
                 -s ${subject} -b "${bids_root}" -t ${task} \
                 -p ${phon} -o ${poolTask} -f ${nFolds} -i ${nIter} \
                 -w ${twMin} -x ${twMax} -n ${n_phons} \
                 -d ${description} -u ${suffix} -e ${extension} \
-                -a "${datatype}"
+                -a "${datatype}" -h ${output_suffix}
             echo "----------------------------------------"
         done
     done
