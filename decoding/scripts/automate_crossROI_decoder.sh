@@ -39,6 +39,13 @@ n_phons=3
 
 target_rois=("SMC")
 source_rois=("Auditory")
+# target_rois=("Audtiory")
+# source_rois=("SMC")
+
+random_data=false
+# random_data=true
+# tar_in_train=true
+tar_in_train=false
 
 nFolds=20
 nIter=10
@@ -53,10 +60,10 @@ suffix="highGamma"
 # suffix="spikeBand"
 extension=".fif"
 
-output_suffix=""
+output_suffix="noTar"
 
-# datatype="epoch(band)(power)(sig)"
-datatype="epoch(band)(power)"
+datatype="epoch(band)(power)(sig)"
+# datatype="epoch(band)(power)"
 
 mem=200G
 if [[ $datatype == *"sig"* ]]; then
@@ -82,7 +89,8 @@ for roi in "${target_rois[@]}"; do
                 -p ${phon} -f ${nFolds} -i ${nIter} \
                 -w ${twMin} -x ${twMax} -n ${n_phons} \
                 -d ${description} -u ${suffix} -e ${extension} \
-                -a "${datatype}"
+                -a "${datatype}" -m "${random_data}" -g "${tar_in_train}" \
+                -h "${output_suffix}"
             echo "----------------------------------------"
         done
     done
