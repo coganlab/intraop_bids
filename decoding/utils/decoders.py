@@ -1,6 +1,7 @@
 import json
 import h5py
 import numpy as np
+import warnings
 from tqdm import tqdm
 from sklearn.base import BaseEstimator, TransformerMixin
 from sklearn.model_selection import cross_val_predict, StratifiedKFold, KFold
@@ -11,8 +12,9 @@ class NaNImputer3D(BaseEstimator, TransformerMixin):
     """Impute NaN values in 3D epoch arrays using per-channel training means.
 
     During ``fit``, computes the mean waveform for each channel across
-    non-NaN training trials.  During ``transform``, replaces any
-    trial-channel slice that contains NaN with the fitted channel mean.
+    non-NaN training trials.  During ``transform``, replaces NaNs with the
+    fitted channel mean.  Channel/time positions that are NaN for every
+    training trial are filled with the mean value of good channels.
 
     Parameters
     ----------
@@ -20,29 +22,106 @@ class NaNImputer3D(BaseEstimator, TransformerMixin):
         If > 0, adds Gaussian noise scaled to ``noise_scale * channel_std``
         to imputed values.  Useful for preventing identical imputed vectors.
         Defaults to 0 (deterministic mean imputation).
+    strategy : str, optional
+        The strategy to use for imputation.  If 'split', mean statistics are
+        computed separately for train and test sets. If 'train', mean
+        statistics are computed on the training set and applied to the test
+        set. Defaults to 'split'.
     """
 
-    def __init__(self, noise_scale=0.0):
+    def __init__(self, noise_scale=0.0, strategy='split'):
         self.noise_scale = noise_scale
+        self.strategy = strategy
 
     def fit(self, X, y=None):
-        self.fill_values_ = np.nanmean(X, axis=0)
-        if self.noise_scale > 0:
-            self.fill_stds_ = np.nanstd(X, axis=0)
+        if self.strategy == 'train':
+            self.fill_means_, self.channel_stds_ = self._get_fill_values(X)
+
         return self
+
 
     def transform(self, X, y=None):
         X_out = X.copy()
         nan_mask = np.isnan(X_out)
+
         if not np.any(nan_mask):
             return X_out
-        means = np.broadcast_to(self.fill_values_, X_out.shape)
+
+        if self.strategy == 'split':
+            fill_means, channel_stds = self._get_fill_values(X)
+        else:
+            fill_means = self.fill_means_
+            channel_stds = self.channel_stds_
+
+        # Broadcast mean waveform and channel standard deviations
+        means = np.broadcast_to(fill_means[None, :, :], X_out.shape)
+        stds = np.broadcast_to(channel_stds[None, None, :], X_out.shape)
+
+        # Mean imputation
         X_out[nan_mask] = means[nan_mask]
+
+        # Add noise only at imputed positions
         if self.noise_scale > 0:
-            stds = np.broadcast_to(self.fill_stds_, X_out.shape)
-            noise = np.random.randn(*X_out.shape) * self.noise_scale * stds
-            X_out[nan_mask] += noise[nan_mask]
+            noise = np.random.normal(
+                loc=0,
+                scale=self.noise_scale * stds[nan_mask],
+            )
+            X_out[nan_mask] += noise
+
         return X_out
+
+    def _get_fill_values(self, X):
+        """Compute mean waveforms and channel standard deviations.
+
+        Parameters
+        ----------
+        X : ndarray, shape (trials, time, channels)
+
+        Returns
+        -------
+        fill_means : ndarray, shape (time, channels)
+            Mean waveform for each channel, with fallbacks for entirely
+            missing channels.
+        channel_stds : ndarray, shape (channels,)
+            Standard deviation of trial-to-trial variability for each channel.
+        """
+        # Mean waveform across trials: (time, channels)
+        channel_means = np.nanmean(X, axis=0)
+
+        # Time-varying mean across available channels: (time,)
+        time_mean = np.nanmean(channel_means, axis=1)
+
+        # Global fallback if all channels are missing at a time point
+        global_mean = np.nanmean(X)
+        if np.isnan(global_mean):
+            global_mean = 0.0
+
+        time_mean = np.where(np.isnan(time_mean), global_mean, time_mean)
+
+        # Fill entirely missing channels using the time-varying mean
+        fill_means = np.where(
+            np.isnan(channel_means),
+            time_mean[:, None],
+            channel_means,
+        )
+
+        # Estimate variability around each channel's mean waveform.
+        # This prevents time-varying evoked responses from inflating the
+        # noise estimate.
+        residuals = X - channel_means[None, :, :]
+        channel_stds = np.nanstd(residuals, axis=(0, 1))
+
+        # Fallback for entirely missing channels
+        valid_stds = channel_stds[np.isfinite(channel_stds)]
+        fallback_std = np.mean(valid_stds) if valid_stds.size else 0.0
+
+        channel_stds = np.where(
+            np.isfinite(channel_stds),
+            channel_stds,
+            fallback_std,
+        )
+
+        return fill_means, channel_stds
 
 
 class DimRedReshape(BaseEstimator):

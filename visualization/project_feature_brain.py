@@ -2,8 +2,9 @@
 
 Loads pre-computed z-scored feature data from BIDS derivatives and renders
 electrode-level values on a subject or average brain surface.  For average-
-space projection, uses spherical surface registration via sphere-outer.reg
-to avoid distortion from Talairach affine transforms on micro-ECoG grids.
+space projection, uses standard pial spherical registration (sphere.reg)
+with outer-smoothed surface indexing to avoid sulcus splitting on micro-ECoG
+grids.
 """
 import csv
 import sys
@@ -13,18 +14,19 @@ from collections import OrderedDict
 import mne
 import numpy as np
 import matplotlib.cm as cm
-import nibabel.freesurfer as fs
 import hydra
 from omegaconf import DictConfig, OmegaConf
 from mne.viz import Brain
 from mne_bids import BIDSPath
 from pathlib import Path
 from bids.layout import BIDSLayout
-from scipy.spatial import cKDTree
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from preprocessing.utils import snake2camel
+# loc/mri.py holds the shared electrode plotting/projection code
+# (used interactively in loc/brainplot.ipynb).
+from visualization.loc import mri as mri_loc
 
 logging.basicConfig(
     level=logging.INFO,
@@ -54,7 +56,7 @@ def validate_subject_files(patient, subjects_dir, average,
 
     for hemi in ('lh', 'rh'):
         for name in (f'{hemi}.pial-outer-smoothed',
-                     f'{hemi}.sphere-outer.reg'):
+                     f'{hemi}.sphere.reg'):
             p = subj_path / 'surf' / name
             if not p.exists():
                 missing.append(str(p))
@@ -70,7 +72,8 @@ def validate_subject_files(patient, subjects_dir, average,
             f"Template brain directory not found: {tpl_path}")
 
     for hemi in ('lh', 'rh'):
-        for name in (f'{hemi}.pial', f'{hemi}.sphere-outer.reg'):
+        for name in (f'{hemi}.pial', f'{hemi}.pial-outer-smoothed',
+                     f'{hemi}.sphere.reg'):
             p = tpl_path / 'surf' / name
             if not p.exists():
                 missing.append(str(p))
@@ -111,43 +114,26 @@ def load_electrode_positions(patient, subjects_dir):
     return elecs
 
 
-def split_by_hemisphere(electrode_positions):
-    """Split electrodes into left/right dicts.
-
-    Uses the channel-name prefix (``L`` / ``R``); falls back to the sign
-    of the x-coordinate when neither prefix matches.
-    """
-    left = OrderedDict()
-    right = OrderedDict()
-    for name, pos in electrode_positions.items():
-        if name.startswith('L'):
-            left[name] = pos
-        elif name.startswith('R'):
-            right[name] = pos
-        elif pos[0] < 0:
-            left[name] = pos
-        else:
-            right[name] = pos
-    return left, right
-
-
 # ---------------------------------------------------------------------------
-# Spherical registration projection
+# Average-space projection
 # ---------------------------------------------------------------------------
 
 def project_electrodes_spherical(patient, subjects_dir,
-                                 electrode_positions, average):
+                                 electrode_positions, average,
+                                 bids_root=None,
+                                 visibility='normal_offset',
+                                 offset_mm=None,
+                                 geometry='rigid_plate'):
     """Project electrode positions to template space via spherical registration.
 
-    For each hemisphere the steps are:
+    Thin wrapper around :func:`mri._calc_avg_sph` (the shared implementation
+    in ``loc/mri.py``) that preserves the channel-name -> coordinate mapping.
 
-    1. Find the nearest vertex on the subject's ``pial-outer-smoothed``
-       surface for every electrode.
-    2. Look up the corresponding vertex in the subject's
-       ``sphere-outer.reg`` (same vertex indexing).
-    3. Find the nearest vertex on the *template's* ``sphere-outer.reg``
-       to that sphere coordinate.
-    4. Return the template's ``pial`` vertex position at that index.
+    ``_calc_avg_sph`` splits electrodes by hemisphere (``x < 0`` -> ``lh``,
+    ``x > 0`` -> ``rh``) and returns the projected coordinates concatenated as
+    ``[lh..., rh...]``, dropping any electrode with ``x == 0``.  We reproduce
+    that ordering here so the returned dict stays aligned with the projected
+    positions.
 
     Parameters
     ----------
@@ -159,47 +145,45 @@ def project_electrodes_spherical(patient, subjects_dir,
         Channel name -> ``(x, y, z)`` in mm (surface-RAS).
     average : str
         Template brain directory name (e.g. ``'cvs_avg35_inMNI152'``).
+    bids_root
+        BIDS dataset root for chanmap-based rigid plate fitting.  Plate
+        segmentation uses ``channels.tsv`` row order; ``coords`` must be in
+        the same order (index ``i`` in ``coords`` ↔ row ``i`` in
+        ``channels.tsv``).
+    visibility : str
+        ``'normal_offset'`` or ``'none'`` (see ``mri._calc_avg_sph``).
+    offset_mm : float, optional
+        Fixed outward normal offset in mm; ``None`` uses auto per-vertex gap.
+    geometry : str
+        ``'rigid_plate'`` or ``'none'`` (see ``mri._calc_avg_sph``).
 
     Returns
     -------
     OrderedDict
-        Channel name -> ``(x, y, z)`` projected onto the template pial
-        surface, in mm.
+        Channel name -> ``(x, y, z)`` projected onto the template surface,
+        in mm.
     """
-    left, right = split_by_hemisphere(electrode_positions)
+    names = list(electrode_positions.keys())
+    coords = np.array(list(electrode_positions.values()), dtype=float)
+    if len(coords) == 0:
+        return OrderedDict()
+
+    proj = mri_loc._calc_avg_sph(
+        coords, patient, average, subjects_dir,
+        bids_root=bids_root,
+        visibility=visibility,
+        offset_mm=offset_mm,
+        geometry=geometry,
+    )
+
+    # Mirror _calc_avg_sph's hemisphere ordering to realign names with coords.
+    lh_idx = np.where(coords[:, 0] < 0)[0]
+    rh_idx = np.where(coords[:, 0] > 0)[0]
+    order = np.concatenate([lh_idx, rh_idx]).astype(int)
+
     projected = OrderedDict()
-
-    for hemi, elecs in [('lh', left), ('rh', right)]:
-        if not elecs:
-            continue
-
-        subj_pial_verts, _ = fs.read_geometry(
-            str(subjects_dir / patient / 'surf'
-                / f'{hemi}.pial-outer-smoothed'))
-        subj_sphere_verts, _ = fs.read_geometry(
-            str(subjects_dir / patient / 'surf'
-                / f'{hemi}.sphere-outer.reg'))
-
-        tpl_sphere_verts, _ = fs.read_geometry(
-            str(subjects_dir / average / 'surf'
-                / f'{hemi}.sphere-outer.reg'))
-        tpl_pial_verts, _ = fs.read_geometry(
-            str(subjects_dir / average / 'surf' / f'{hemi}.pial'))
-
-        subj_pial_tree = cKDTree(subj_pial_verts)
-        tpl_sphere_tree = cKDTree(tpl_sphere_verts)
-
-        elec_coords = np.array(list(elecs.values()))
-
-        _, subj_vert_idx = subj_pial_tree.query(elec_coords)
-        subj_sphere_coords = subj_sphere_verts[subj_vert_idx]
-
-        _, tpl_vert_idx = tpl_sphere_tree.query(subj_sphere_coords)
-        tpl_positions = tpl_pial_verts[tpl_vert_idx]
-
-        for i, name in enumerate(elecs.keys()):
-            projected[name] = tuple(tpl_positions[i])
-
+    for pos, idx in zip(proj, order):
+        projected[names[idx]] = tuple(pos)
     return projected
 
 
@@ -233,6 +217,21 @@ def save_region_labels_tsv(filepath, ch_names, region_labels, ch_values):
         for ch, val in zip(ch_names, ch_values):
             region = region_labels.get(ch, 'unknown')
             f.write(f'{ch}\t{region}\t{val:.6f}\n')
+
+
+def is_white_matter_label(label):
+    """Return ``True`` if an atlas region label denotes white matter.
+
+    Used to honour the ``rm_wm`` option now that the in-house ``plot_subj``
+    no longer performs the filtering for us.  Matching is heuristic and based
+    on the conventions of the ``aparc``/``aseg`` labels returned by
+    ``ieeg.viz.mri.gen_labels`` (e.g. ``Left-Cerebral-White-Matter``,
+    ``wm-lh-...``).
+    """
+    if not label:
+        return False
+    lab = str(label).lower()
+    return 'white' in lab or lab.startswith('wm')
 
 
 # ---------------------------------------------------------------------------
@@ -271,6 +270,7 @@ def load_feature_epochs(patient, bids_layout, task_period, feature,
             description=f"{task_period}Zscore",
             check=False
         )
+        print(feature_path)
         matches = feature_path.match()
         if matches:
             return mne.read_epochs(matches[0], preload=True)
@@ -327,25 +327,53 @@ def values_to_sizes(values, size_min=0.2, size_max=1.5):
 # Plotting helpers
 # ---------------------------------------------------------------------------
 
-def _add_electrodes(brain, positions_mm, colors, sizes, hemi):
-    """Place electrode foci on a ``Brain`` figure for one hemisphere.
+def build_brain(subject, subjects_dir, cfg):
+    """Create a ``Brain`` figure for *subject* using the configured surface.
 
-    *positions_mm* values are in millimetres (FreeSurfer surface-RAS);
-    they are converted to metres to match ``Brain(units='m')``.
+    Mirrors the ``Brain`` construction in ``loc/mri.py`` (``units='m'``,
+    white background) and falls back to flat cortex shading when curvature
+    data is missing for a template.
     """
-    pos_array = np.array(list(positions_mm.values()))
-    if len(pos_array) == 0:
-        return
-    pos_m = pos_array / 1000.0
+    try:
+        return Brain(subject, subjects_dir=str(subjects_dir),
+                     cortex='low_contrast', alpha=cfg.brain_alpha,
+                     background='white', surf=cfg.surface, hemi=cfg.hemi,
+                     units='m', show=False)
+    except Exception:
+        logger.warning('Curvature data missing for %s; using flat cortex '
+                       'shading.', subject)
+        return Brain(subject, subjects_dir=str(subjects_dir),
+                     cortex='ivory', alpha=cfg.brain_alpha,
+                     background='white', surf=cfg.surface, hemi=cfg.hemi,
+                     units='m', show=False)
 
-    for i, p in enumerate(pos_m):
-        c = colors[i]
-        s = sizes[i]
+
+def add_feature_foci(brain, coords_mm, colors, sizes, hemi='both'):
+    """Place per-electrode coloured foci on a ``Brain`` figure.
+
+    This is the value-coloured counterpart to ``mri._plot_elecs_on_brain``:
+    electrodes are routed to a hemisphere by the sign of their x coordinate
+    (matching that module's convention) and drawn one at a time so each can
+    carry its own colour and ``scale_factor``.
+
+    *coords_mm* are in millimetres (FreeSurfer surface-RAS) and are converted
+    to metres to match ``Brain(units='m')``.  *colors*, *sizes* and
+    *coords_mm* must share the same ordering.
+    """
+    coords = np.asarray(coords_mm, dtype=float)
+    if len(coords) == 0:
+        return
+    coords_m = coords / 1000.0
+
+    for p, c, s in zip(coords_m, colors, sizes):
+        elec_hemi = 'lh' if p[0] < 0 else 'rh'
+        if hemi in ('lh', 'rh') and elec_hemi != hemi:
+            continue
         if len(c) == 4:
-            brain.add_foci(p, hemi=hemi, color=c[:3],
+            brain.add_foci(p, hemi=elec_hemi, color=c[:3],
                            scale_factor=s, alpha=c[3])
         else:
-            brain.add_foci(p, hemi=hemi, color=c, scale_factor=s)
+            brain.add_foci(p, hemi=elec_hemi, color=c, scale_factor=s)
 
 
 # ---------------------------------------------------------------------------
@@ -403,8 +431,6 @@ def main(cfg: DictConfig):
         except Exception as e:
             logger.warning(f'Could not load region labels: {e}')
 
-    from ieeg.viz.mri import plot_subj
-
     for tp_name in task_periods:
         for feat_name in features:
             logger.info(f'##### {tp_name} / {feat_name} #####')
@@ -445,59 +471,51 @@ def main(cfg: DictConfig):
             logger.info(f'Channels matched: {len(active_elecs)} of '
                         f'{len(epochs.ch_names)} epoch channels')
 
+            names = list(active_elecs.keys())
+            color_map = dict(zip(names, colors))
+            size_map = dict(zip(names, sizes))
+
             if cfg.projection == 'average':
-                # --- Spherical registration projection ---
+                # --- Spherical registration projection (loc/mri.py) ---
                 projected = project_electrodes_spherical(
-                    cfg.patient, subjects_dir, active_elecs, cfg.average)
+                    cfg.patient, subjects_dir, active_elecs, cfg.average,
+                    bids_root=Path(bids_layout.root))
 
-                left_proj, right_proj = split_by_hemisphere(projected)
-
-                color_map = dict(zip(active_elecs.keys(), colors))
-                size_map = dict(zip(active_elecs.keys(), sizes))
-                left_colors = [color_map[n] for n in left_proj]
-                left_sizes = [size_map[n] for n in left_proj]
-                right_colors = [color_map[n] for n in right_proj]
-                right_sizes = [size_map[n] for n in right_proj]
-
-                try:
-                    brain = Brain(
-                        cfg.average, subjects_dir=str(subjects_dir),
-                        cortex='low_contrast', alpha=cfg.brain_alpha,
-                        background='white', surf=cfg.surface,
-                        hemi=cfg.hemi, units='m', show=False)
-                except Exception:
-                    logger.warning(
-                        'Curvature data missing for template; '
-                        'using flat cortex shading.')
-                    brain = Brain(
-                        cfg.average, subjects_dir=str(subjects_dir),
-                        cortex='ivory', alpha=cfg.brain_alpha,
-                        background='white', surf=cfg.surface,
-                        hemi=cfg.hemi, units='m', show=False)
-
-                if left_proj and cfg.hemi != 'rh':
-                    _add_electrodes(brain, left_proj,
-                                    left_colors, left_sizes, 'lh')
-                if right_proj and cfg.hemi != 'lh':
-                    _add_electrodes(brain, right_proj,
-                                    right_colors, right_sizes, 'rh')
+                plot_names = list(projected.keys())
+                plot_coords = np.array(list(projected.values()), dtype=float)
+                brain = build_brain(cfg.average, subjects_dir, cfg)
 
             elif cfg.projection == 'subject':
-                brain = plot_subj(
-                    cfg.patient,
-                    subj_dir=str(subjects_dir),
-                    no_wm=cfg.rm_wm,
-                    surface=cfg.surface,
-                    hemi=cfg.hemi,
-                    color=colors,
-                    size=sizes,
-                    background='white',
-                    transparency=cfg.brain_alpha,
-                    show=False,
-                )
+                plot_names = list(names)
+                plot_coords = np.array(list(active_elecs.values()),
+                                       dtype=float)
+
+                # rm_wm previously handled inside ieeg's plot_subj; replicate
+                # by dropping electrodes whose atlas label is white matter.
+                if cfg.rm_wm:
+                    if region_labels is None:
+                        logger.warning('rm_wm=True but no region labels are '
+                                       'available; keeping all electrodes.')
+                    else:
+                        keep = [not is_white_matter_label(
+                                    region_labels.get(n, 'unknown'))
+                                for n in plot_names]
+                        n_drop = len(keep) - sum(keep)
+                        if n_drop:
+                            logger.info(f'rm_wm: dropping {n_drop} '
+                                        f'white-matter electrodes.')
+                        plot_names = [n for n, k in zip(plot_names, keep) if k]
+                        plot_coords = plot_coords[np.array(keep, dtype=bool)]
+
+                brain = build_brain(cfg.patient, subjects_dir, cfg)
             else:
                 raise ValueError(
                     f'Unknown projection type: {cfg.projection}')
+
+            plot_colors = [color_map[n] for n in plot_names]
+            plot_sizes = [size_map[n] for n in plot_names]
+            add_feature_foci(brain, plot_coords, plot_colors, plot_sizes,
+                             hemi=cfg.hemi)
 
             # --- Save region-label TSV ---
             if region_labels is not None:

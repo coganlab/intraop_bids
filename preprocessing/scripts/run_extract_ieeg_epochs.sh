@@ -3,8 +3,8 @@
 #SBATCH -e /hpc/home/zms14/cworkspace/jobs/extract_epochs/%j.error
 #SBATCH -p common,scavenger,coganlab-gpu
 #SBATCH -c 25
-#SBATCH --mem=128G
-#SBATCH --time=01:00:00
+#SBATCH --mem=512G
+#SBATCH --time=02:00:00
 
 # ----------------------------
 # Load environment

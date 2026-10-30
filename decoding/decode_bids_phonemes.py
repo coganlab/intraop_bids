@@ -23,7 +23,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
-def build_output_path(cfg, twEpoch, results_root):
+def build_output_path(cfg, twEpoch, results_root, output_suffix=None):
     """Construct a BIDSPath for saving decoding results."""
     description = cfg.description
     phase = ('Perception' if 'perception' in description.lower()
@@ -51,17 +51,34 @@ def build_output_path(cfg, twEpoch, results_root):
     phoneme_suffix = ('pAll' if cfg.phoneme_idx == -1
                       else f'p{cfg.phoneme_idx}')
 
+    desc = (f"{band}({phase})({norm_type})(tw{tw_str})({sig_str}Channel)")
+    if output_suffix is not None:
+        desc += f"({output_suffix})"
     outpath = BIDSPath(
         root=results_root,
         subject=cfg.patient,
         datatype=datatype_str,
-        description=(f"{band}({phase})({norm_type})"
-                     f"(tw{tw_str})({sig_str}Channel)"),
+        description=desc,
         suffix=phoneme_suffix,
         extension='.h5',
         check=False,
     )
     return outpath
+
+
+def get_ctx_rois(roi, hemi=None, roi_dict=None):
+    # default to both hemispheres if not specified
+    if hemi is None:
+        hemi = ('lh', 'rh')
+
+    if roi_dict is not None:
+        roi = roi_dict.get(roi, roi)
+
+    return {
+        f"ctx_{h}_{region}"
+        for h in hemi
+        for region in roi
+    }
 
 
 @hydra.main(version_base=None, config_path="config",
@@ -78,9 +95,14 @@ def main(cfg: DictConfig) -> None:
     tw = (OmegaConf.to_container(cfg.time_window)
           if cfg.time_window is not None else [None, None])
 
+    # get ROI labels
+    rois = get_ctx_rois(cfg.roi, cfg.hemi, cfg.roi_dict)
+    logger.info(f'Target ROI: specified {cfg.roi}, resolved {rois}')
+
     logger.info(f'Loading data for subject {cfg.patient}...')
     dataset = PhonemeDatasetBIDS(
         bids_root, cfg.patient, cfg.phoneme_idx, cfg.n_phons, tw,
+        elec_roi=rois, nan_bad_chans=True,
         description=cfg.description, suffix=cfg.suffix,
         extension=cfg.extension, task=cfg.task, datatype=cfg.datatype)
     X, y = dataset.get_data()
@@ -103,7 +125,7 @@ def main(cfg: DictConfig) -> None:
     else:
         results_root = bids_root.parent / 'decoding'
 
-    outpath = build_output_path(cfg, dataset.twEpoch, results_root)
+    outpath = build_output_path(cfg, dataset.twEpoch, results_root, cfg.output_suffix)
     outpath.mkdir(exist_ok=True)
     logger.info(f'Saving results to {outpath.fpath}')
     decoder.save_results(outpath.fpath, overwrite=True)

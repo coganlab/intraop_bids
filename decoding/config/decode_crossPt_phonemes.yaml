@@ -3,6 +3,7 @@ patient: ???
 task: ???
 
 phoneme_idx: -1    # -1 for all phonemes, 1..N for specific position
+n_phons: 3 # number of phonemes in target, cross-patient are still decided on the fly to allow pooling with various phoneme amounts
 pool_task: all     # phoneme | lexical | all
 
 # BIDS file matching
@@ -17,10 +18,18 @@ extension: .fif
 datatype: "epoch(band)(power)"
 
 # Cross-patient dataset roots
-ps_root: "~/cworkspace/BIDS_1.0_Phoneme_Sequence_uECoG/BIDS/derivatives/epoch(phonemeLevel)(CAR)"
+# ps_root: "~/cworkspace/BIDS_1.0_Phoneme_Sequence_uECoG/BIDS/derivatives/epoch(phonemeLevel)(CAR)"
+ps_root: "~/cworkspace/BIDS-1.4_Phoneme_sequencing/BIDS/derivatives/epoch(phonemeLevel)(CAR)"
 
 # Subject cohorts
-ps_subjects: [S14, S22, S23, S26, S33, S39, S58, S62]
+# ps_subjects: [S14, S22, S23, S26, S33, S39, S58, S62, ]
+# ps_subjects: [D0019, D0022, D0023, D0024, D0025, D0028, D0029, D0035,
+#               D0040, D0041, D0042, D0045, D0049, D0052, D0053, D0054, D0055,
+#               D0056, D0057, D0058, D0059, D0060, D0061, D0063, D0064, D0066,
+#               D0067, D0068, D0069, D0070, D0071, D0073, D0075, D0077,
+#               D0079, D0084, D0085, D0086, D0088, D0091, D0092, D0093, D0094,
+#               D0095, D0096, D0100, D0102, D0103]
+ps_subjects: [D0028, D0040, D0042, D0049, D0052, D0055, D0064, D0068, D0069, D0075, D0079, D0084, D0092, D0095, D0096]
 lex_subjects: [S41, S45, S47, S55, S56, S63, S67, S73, S74, S75, S76, S78]
 
 # Decoding parameters
@@ -34,5 +43,26 @@ decode_tw: [-0.5, 0.5]
 # Time window for alignment (null = full epoch)
 time_window: null
 
+
+# ROI definitions (assuming APARC 2009)
+rois: null
+# rois:
+# - "G_temp_sup-G_T_transv"
+# - "G_temp_sup-Plan_tempo"
+# - "G_temp_sup-Lateral"
+# - "G_temp_sup-Plan_polar"
+# - "S_temporal_sup"
+# - "S_temporal_transverse"
+# rois:
+# - "G_precentral"
+# - "G_postcentral"
+# - "S_central"
+
+
 # Output (null = auto-derived from bids_root)
 results_root: null
+
+output_suffix: null
+# output_suffix: roiAud
+# output_suffix: roiSMC
+

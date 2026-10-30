@@ -22,8 +22,8 @@ task_period="[perception,production]"
 # task_period="perception"
 # task_period="production"
 
-# recompute="true"
-recompute="false"
+recompute="true"
+# recompute="false"
 
 for subject in "${subj_arr[@]}"; do
     echo "----------------------------------------"

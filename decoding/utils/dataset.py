@@ -1,8 +1,12 @@
 from pathlib import Path
 
 import numpy as np
-from mne import read_epochs
+from mne import read_epochs, get_montage_volume_labels
+from mne.channels import make_dig_montage
 from mne_bids import BIDSPath
+
+
+RECON_DIR = Path("~/cworkspace/ECoG_Recon_Full/").expanduser()
 
 
 def format_band_str(suffix):
@@ -98,25 +102,30 @@ class PhonemeDatasetBIDS:
     """
 
     def __init__(self, bidsRoot, subject, phonemeIdx, nPhons=3,
-                 tw=None, **kwargs):
-        self.bidsRoot = Path(bidsRoot)
+                 tw=None, nan_bad_chans=False, elec_roi=None,
+                 recon_dir=RECON_DIR, **kwargs):
+        self.bidsRoot = Path(bidsRoot).expanduser()
         self.subject = subject
         self.phonemeIdx = 'all' if phonemeIdx == -1 else phonemeIdx
         self.nPhons = nPhons
         self.tw = tw if tw is not None else [None, None]
-
+        self.nan_bad_chans = nan_bad_chans
+        self.elec_roi = set(elec_roi) if elec_roi is not None else None
+        self.recon_dir = Path(recon_dir).expanduser()
+        
         suffix = kwargs.pop('suffix', None)
         self.suffixes = _normalize_suffixes(suffix) if suffix is not None \
             else [None]
         self.n_bands = len(self.suffixes)
         self._bids_kwargs = kwargs
 
-        self.data, self.labels = self._load_data()
+        self.data, self.labels = self._load_data(nan_bad_chans=nan_bad_chans,
+                                                 elec_roi=self.elec_roi)
 
     def get_data(self):
         return self.data, self.labels
 
-    def _load_one_band(self, sfx):
+    def _load_one_band(self, sfx, nan_bad_chans=False, elec_roi=None):
         bids_path = BIDSPath(
             root=self.bidsRoot,
             subject=self.subject,
@@ -124,14 +133,66 @@ class PhonemeDatasetBIDS:
             suffix=sfx,
             **self._bids_kwargs,
         )
+        
         try:
             data_path = bids_path.match()[0]
         except IndexError:
             raise FileNotFoundError(
-                f'No matching file found for {bids_path}')
-        return read_epochs(data_path, preload=True)
+                f'No matching file found for {bids_path}'
+            )
 
-    def _load_data(self):
+        epochs = read_epochs(data_path, preload=True)
+
+        if elec_roi is not None:
+            roi_picks = self._get_roi_picks(epochs, elec_roi)
+            if not roi_picks:
+                print(f"Warning: No electrodes found in ROIs {elec_roi} for "
+                      f"subject {self.subject}. Returning empty data.")
+                epochs._data = np.empty((epochs._data.shape[0], 0, epochs._data.shape[2]))
+                return epochs
+            epochs.pick(roi_picks)
+
+        if nan_bad_chans:
+            bad_chans = epochs.info['bads'].copy()
+
+            bad_mask = np.isin(epochs.ch_names, bad_chans)
+
+            # Data shape: (epochs, channels, timepoints)
+            # Replace bad channels with NaNs in place. _data will exist bc preload=True
+            epochs._data[:, bad_mask, :] = np.nan
+
+        return epochs
+
+    def _get_roi_picks(self, epochs, rois):
+        elec_labels = self._get_elec_labels(epochs)
+        roi_picks = self._get_roi_picks_from_labels(elec_labels, rois)
+        return roi_picks
+
+    def _get_elec_labels(self, epochs):
+        montage = epochs.get_montage()
+        positions = montage.get_positions()['ch_pos']
+        montage_mri = make_dig_montage(ch_pos=positions, coord_frame='mri')
+
+        # labels per electrode
+        labels, _ = get_montage_volume_labels(
+            montage_mri,
+            subject=self.subject[0] + self.subject[1:].lstrip('0'),
+            subjects_dir=self.recon_dir,
+            aseg="aparc.a2009s+aseg",
+            # aseg="aparc+aseg",
+            dist=1
+        )
+
+        return labels
+
+    def _get_roi_picks_from_labels(self, elec_labels, rois):
+        return [
+                ch_name
+                for ch_name, roi_list in elec_labels.items()
+                if rois.intersection(roi_list)
+            ]
+
+    def _load_data(self, nan_bad_chans=False, elec_roi=None):
         feats_per_band = []
         labels_ref = None
         ch_names_ref = None
@@ -139,7 +200,7 @@ class PhonemeDatasetBIDS:
         label_dict_ref = None
 
         for band_idx, sfx in enumerate(self.suffixes):
-            data = self._load_one_band(sfx)
+            data = self._load_one_band(sfx, nan_bad_chans, elec_roi)
             t_data = data.times
 
             if band_idx == 0:
