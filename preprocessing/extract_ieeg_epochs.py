@@ -31,6 +31,8 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+N_JOBS = -1
+
 
 def _apply_nan_mask(data, good_mask):
     """Set bad trial-channel data to NaN in-place.
@@ -46,7 +48,7 @@ def _apply_nan_mask(data, good_mask):
 
 
 def calc_sig_channels(data, baseline, tw_interest=[-0.25, 0.25],
-                      tw_baseline=[-0.5, 0], method='tpc', n_jobs=-1):
+                      tw_baseline=[-0.5, 0], method='tpc', n_jobs=N_JOBS):
     logger.info('Calculating significant channels')
     sig_channels = get_significant_channels(data, baseline,
                                             method=method,
@@ -80,7 +82,6 @@ def main(cfg: DictConfig) -> None:
     # Include derivatives in the layout if we need to read from any of them.
     bids_layout = BIDSLayout(
         root=cfg.bids_root,
-        # derivatives=bool(cfg.phoneme_level) or spatial_avg_enabled,
         derivatives=bool(cfg.derivative_name) or spatial_avg_enabled,
     )
 
@@ -194,7 +195,7 @@ def main(cfg: DictConfig) -> None:
 
         items_per_trial_stim = [sum(stim_df_deriv['trial'] == i) for i in stim_df_deriv['trial'].unique()]
         items_per_trial_resp = [sum(resp_df_deriv['trial'] == i) for i in resp_df_deriv['trial'].unique()]
-        
+
         logger.info(f'Stimulus items per trial: {items_per_trial_stim}')
         logger.info(f'Response items per trial: {items_per_trial_resp}')
 
@@ -271,7 +272,7 @@ def main(cfg: DictConfig) -> None:
                 sig_channels = calc_sig_channels(feat_data_sig, base_data_sig,
                                                  tw_interest=tp_cfg.sig_times,
                                                  method=cfg.sig_channels_method,
-                                                 n_jobs=-1)
+                                                 n_jobs=N_JOBS)
                 del base_data_sig
                 sig_channels_clean = [ch for ch in sig_channels if ch not in
                                       raw.info['bads']]
@@ -309,9 +310,9 @@ def main(cfg: DictConfig) -> None:
 
             # Resample to lower frequency for output
             logger.info(f'Resampling {feat_cfg.name} to {feat_cfg.out_fs} Hz')
-            base_data = base_data.resample(sfreq=feat_cfg.out_fs, n_jobs=-1)
-            feat_z = feat_z.resample(sfreq=feat_cfg.out_fs, n_jobs=-1)
-            feat_ms = feat_ms.resample(sfreq=feat_cfg.out_fs, n_jobs=-1)
+            base_data = base_data.resample(sfreq=feat_cfg.out_fs, n_jobs=N_JOBS)
+            feat_z = feat_z.resample(sfreq=feat_cfg.out_fs, n_jobs=N_JOBS)
+            feat_ms = feat_ms.resample(sfreq=feat_cfg.out_fs, n_jobs=N_JOBS)
 
             # Apply per-channel NaN mask to mark bad trial-channel data
             _apply_nan_mask(base_data._data, good_mask_base_apply)

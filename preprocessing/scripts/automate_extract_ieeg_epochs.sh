@@ -49,9 +49,9 @@ spatialAvg=false  # leave this lower case
 spatialAvgContactSizes=(2 3 4 5 6 7 8 9 10 11 12 13 14 15 16)
 # spatialAvgContactSizes=(2)
 
-mem="128G"
+mem="100G"
 if [ "${derivative_name}" == "wordLevel" ]; then
-    mem="256G"
+    mem="200G"
 elif [ "${derivative_name}" == "phonemeLevel" ]; then
     mem="512G"
 fi
