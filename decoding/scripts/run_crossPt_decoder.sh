@@ -3,7 +3,7 @@
 #SBATCH -e /hpc/home/zms14/cworkspace/jobs/decode_crossPtTask/%j.error
 #SBATCH -p common,scavenger,coganlab-gpu
 #SBATCH -c 20
-#SBATCH --mem=64G
+#SBATCH --mem=200G
 
 # ----------------------------
 # Load environment
@@ -27,8 +27,9 @@ DESCRIPTION="productionMeanSub"
 SUFFIX="highgamma"
 EXTENSION=".fif"
 DATATYPE="epoch(band)(power)"
+OUTPUT_SUFFIX=""
 
-while getopts s:b:t:p:o:f:i:w:x:n:d:u:e:a: flag
+while getopts s:b:t:p:o:f:i:w:x:n:d:u:e:a:h: flag
 do
     case "${flag}" in
         s) SUBJECT=${OPTARG};;
@@ -45,6 +46,7 @@ do
         u) SUFFIX=${OPTARG};;
         e) EXTENSION=${OPTARG};;
         a) DATATYPE=${OPTARG};;
+        h) OUTPUT_SUFFIX=${OPTARG};;
     esac
 done
 
@@ -79,4 +81,5 @@ python decode_crossPt_phonemes.py \
     suffix=${SUFFIX} \
     extension=${EXTENSION} \
     "datatype='${DATATYPE}'" \
+    output_suffix=${OUTPUT_SUFFIX} \
     hydra.run.dir=/hpc/home/zms14/cworkspace/outputs/${SLURM_JOB_NAME}_${SLURM_JOB_ID}
