@@ -17,26 +17,26 @@ roi_dict:
         "S_temporal_transverse"
     ]
     # Temporal language and association
-    Posterior_Temporal: [
+    PosteriorTemporal: [
         "G_temp_middle",
         "S_temporal_inf"
     ]
-    Ventral_Temporal: [
+    VentralTemporal: [
         "G_temp_inf",
         "G_oc-temp_lat-fusifor",
         "G_oc-temp_med-Lingual"
     ]
-    Anterior_Temporal: [
+    AnteriorTemporal: [
         "Pole_temporal",
         "G_parahippocampal"
     ]
     # Frontal
-    Inferior_Frontal: [
+    InferiorFrontal: [
         "G_front_inf-Opercular",
         "G_front_inf-Triangul",
         "S_front_inf"
     ]
-    Premotor_Frontal: [
+    PremotorFrontal: [
         "G_front_middle",
         "G_front_sup",
         "S_front_middle",
@@ -50,12 +50,12 @@ roi_dict:
         "S_orbital_medial"
     ]
     # Parietal
-    Inferior_Parietal: [
+    InferiorParietal: [
         "G_pariet_inf-Supramar",
         "G_pariet_inf-Angular",
         "S_intrapariet_and_P_trans"
     ]
-    Superior_Parietal: [
+    SuperiorParietal: [
         "G_parietal_sup",
         "G_precuneus"
     ]

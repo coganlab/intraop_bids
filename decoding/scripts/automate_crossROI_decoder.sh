@@ -38,8 +38,8 @@ phonemeIdx=(-1)
 n_phons=3
 
 target_rois=("SMC")
-source_rois=("Auditory" "Posterior_Temporal" "Ventral_Temporal" "Anterior_Temporal" "Inferior_Frontal"
-             "Premotor_Frontal" "Orbitofrontal" "Inferior_Parietal" "Superior_Parietal" "Insula"
+source_rois=("Auditory" "PosteriorTemporal" "VentralTemporal" "AnteriorTemporal" "InferiorFrontal"
+             "PremotorFrontal" "Orbitofrontal" "InferiorParietal" "SuperiorParietal" "Insula"
              "Cingulate" "Occipital")
 # source_rois=("Auditory")
 # target_rois=("Audtiory")
