@@ -14,11 +14,11 @@ join () {
 
 
 subj_arr=("D0019" "D0022" "D0023" "D0024" "D0025" "D0028" "D0029" "D0035"
-              "D0040" "D0041" "D0042" "D0045" "D0049" "D0052" "D0053" "D0054" "D0055"
-              "D0056" "D0057" "D0058" "D0059" "D0060" "D0061" "D0063" "D0064" "D0066"
-              "D0067" "D0068" "D0069" "D0070" "D0071" "D0073" "D0075" "D0077"
-              "D0079" "D0084" "D0085" "D0086" "D0088" "D0091" "D0092" "D0093"
-              "D0095" "D0096" "D0100" "D0102" "D0103")
+          "D0040" "D0041" "D0042" "D0045" "D0049" "D0052" "D0053" "D0054" "D0055"
+          "D0056" "D0057" "D0058" "D0059" "D0060" "D0061" "D0063" "D0064" "D0066"
+          "D0067" "D0068" "D0069" "D0070" "D0071" "D0073" "D0075" "D0077"
+          "D0079" "D0084" "D0085" "D0086" "D0088" "D0091" "D0092" "D0093"
+          "D0095" "D0096" "D0100" "D0102" "D0103")
 # subj_arr=("D0028" "D0040" "D0042" "D0049" "D0052" "D0055" "D0064" "D0068" "D0069" "D0075" "D0079" "D0084" "D0092" "D0095" "D0096")
 # subj_arr=("D0028" "D0040" "D0042" "D0049" "D0052" "D0055" "D0064" "D0068" "D0069" "D0075" "D0079" "D0084" "D0092" "D0096")
 # subj_arr=("D0095")
@@ -31,7 +31,10 @@ bids_root="/hpc/home/zms14/cworkspace/BIDS-1.4_Phoneme_sequencing/BIDS/derivativ
 phonemeIdx=(-1)
 n_phons=3
 
-rois=("SMC" "Auditory")
+# rois=("SMC" "Auditory")
+rois=("SMC" "Auditory" "Posterior_Temporal" "Ventral_Temporal" "Anterior_Temporal"
+      "Inferior_Frontal" "Premotor_Frontal" "Orbitofrontal" "Inferior_Parietal"
+      "Superior_Parietal" "Insula" "Cingulate" "Occipital")
 
 nFolds=20
 nIter=50
@@ -51,8 +54,8 @@ extension=".fif"
 
 output_suffix=""
 
-datatype="epoch(band)(power)(sig)"
-# datatype="epoch(band)(power)"
+# datatype="epoch(band)(power)(sig)"
+datatype="epoch(band)(power)"
 
 mem=100G
 if [[ $datatype == *"sig"* ]]; then
