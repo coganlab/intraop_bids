@@ -10,21 +10,21 @@
 # nPhons=5
 # task="lexical"
 
-# # subj_arr=("S14")
-# subj_arr=("S14" "S16" "S18" "S19" "S22" "S23" "S26" "S32" "S33" "S36" "S39" "S57" "S58" "S62")
-# # subj_arr=("S16" "S18" "S19" "S22" "S23" "S26" "S32" "S33" "S36" "S39" "S57" "S58" "S62")
-# bids_root="~/cworkspace/BIDS_1.0_Phoneme_Sequence_uECoG/BIDS/derivatives/epoch(phonemeLevel)(CAR)"
+# subj_arr=("S14")
+subj_arr=("S14" "S16" "S18" "S19" "S22" "S23" "S26" "S32" "S33" "S36" "S39" "S57" "S58" "S62")
+# subj_arr=("S16" "S18" "S19" "S22" "S23" "S26" "S32" "S33" "S36" "S39" "S57" "S58" "S62")
+bids_root="~/cworkspace/BIDS_1.0_Phoneme_Sequence_uECoG/BIDS/derivatives/epoch(phonemeLevel)(CAR)"
 # phonemeIdx=(-1 1 2 3)
-# # phonemeIdx=(1 2 3)
-# # phonemeIdx=(-1)
-# nPhons=3
-# task="phoneme"
-
-subj_arr=("S91")
-bids_root="~/cworkspace/BIDS_1.0_Sentence_µECoG/BIDS/derivatives/epoch(phonemeLevel)(CAR)"
+# phonemeIdx=(1 2 3)
 phonemeIdx=(-1)
-nPhons=1
-task="sentence"
+nPhons=3
+task="phoneme"
+
+# subj_arr=("S91")
+# bids_root="~/cworkspace/BIDS_1.0_Sentence_µECoG/BIDS/derivatives/epoch(phonemeLevel)(CAR)"
+# phonemeIdx=(-1)
+# nPhons=1
+# task="sentence"
 
 # # subj_arr=("D0095")
 # # subj_arr=("D0019" "D0022" "D0023" "D0024" "D0025" "D0028" "D0029" "D0031" "D0035"
@@ -58,8 +58,8 @@ twMax=0.5
 datatype="epoch(band)(power)(sig)"
 # datatype="epoch(band)(power)"
 
-task_periods=("perception" "production")
-# task_periods=("production")
+# task_periods=("perception" "production")
+task_periods=("production")
 # norm_type="MeanSub"
 description="Zscore"
 suffix="highGamma"
