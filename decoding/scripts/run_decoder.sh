@@ -2,9 +2,9 @@
 #SBATCH --output=/hpc/home/zms14/cworkspace/jobs/decode_phonemeLevel/%j.out
 #SBATCH -e /hpc/home/zms14/cworkspace/jobs/decode_phonemeLevel/%j.error
 #SBATCH -p common,scavenger
-#SBATCH --time=01:00:00
+#SBATCH --time=02:00:00
 #SBATCH -c 20
-#SBATCH --mem=16G
+#SBATCH --mem=64G
 
 # ----------------------------
 # Load environment

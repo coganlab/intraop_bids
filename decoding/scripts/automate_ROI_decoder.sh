@@ -40,8 +40,9 @@ chance=false
 twMin=-0.5
 twMax=0.5
 
-# task_periods=("production" "perception")
-task_periods=("production")
+task_periods=("production" "perception")
+# task_periods=("production")
+# task_periods=("perception")
 # norm_type="MeanSub"
 norm_type="Zscore"
 suffix="highGamma"

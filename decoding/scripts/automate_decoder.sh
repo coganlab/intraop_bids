@@ -55,6 +55,9 @@ chance=false
 twMin=-0.5
 twMax=0.5
 
+datatype="epoch(band)(power)(sig)"
+# datatype="epoch(band)(power)"
+
 task_periods=("perception" "production")
 # task_periods=("production")
 # norm_type="MeanSub"
