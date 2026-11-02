@@ -208,7 +208,7 @@ def build_output_path(cfg, tw_epoch, roi, results_root, output_suffix=None):
 
     sig_str = 'sig' if 'sig' in cfg.datatype else 'all'
 
-    datatype_str = 'decode(production)(patientSpecific)'
+    datatype_str = f'decode({phase})'
     if cfg.compute_chance:
         datatype_str += '(chance)'
 
