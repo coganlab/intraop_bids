@@ -44,23 +44,25 @@ source_rois=("Auditory")
 
 random_data=false
 # random_data=true
-# tar_in_train=true
-tar_in_train=false
+tar_in_train=true
+# tar_in_train=false
 
 nFolds=20
 nIter=10
 twMin=-1
 twMax=1
 
-# task_periods=("production" "perception")
-task_periods=("production")
+task_periods=("production" "perception")
+# task_periods=("production")
+# task_periods=("perception")
 # norm_type="MeanSub"
 norm_type="Zscore"
 suffix="highGamma"
 # suffix="spikeBand"
 extension=".fif"
 
-output_suffix="noTar"
+output_suffix=""
+# output_suffix="noTar"
 
 datatype="epoch(band)(power)(sig)"
 # datatype="epoch(band)(power)"
