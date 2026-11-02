@@ -15,7 +15,7 @@ from tqdm import tqdm
 from joblib import Parallel, delayed
 from mne_bids import BIDSPath
 
-sys.path.insert(0, str(Path(__file__).resolve().parent))
+# sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from utils.dataset import PhonemeDatasetBIDS, format_band_str
 from utils.decoders import DimRedReshape, NaNImputer3D, decodeResultsBIDS
@@ -32,14 +32,15 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 PS2ARPA = {
-    'a': 'AA', 'ae': 'EH', 'i': 'IY', 'u': 'UH',
+    'a': 'AA', 'ae': 'EH', 'i': 'IY', 'u': 'UW',
     'b': 'B', 'p': 'P', 'v': 'V', 'g': 'G', 'k': 'K',
+    'UH': 'UW', 'AE': 'EH'
 }
 TARGET_EVENT_ID = {
     'AA': 1, 'AE': 2, 'AH': 3, 'AO': 4, 'AY': 5, 'B': 6, 'D': 7,
     'EH': 8, 'EY': 9, 'F': 10, 'G': 11, 'HH': 12, 'IH': 13,
     'IY': 14, 'JH': 15, 'K': 16, 'L': 17, 'M': 18, 'N': 19,
-    'OW': 20, 'P': 21, 'R': 22, 'S': 23, 'T': 24, 'UH': 25,
+    'OW': 20, 'P': 21, 'R': 22, 'S': 23, 'T': 24, 'UW': 25,
     'V': 26, 'W': 27, 'Z': 28,
 }
 
@@ -51,8 +52,7 @@ TARGET_EVENT_ID = {
 
 
 def load_dataset(pt, bids_root, phoneme_idx, tw, elec_rois=None,
-                 nan_bad_chans=True, n_phons=None, ps_subjects=None,
-                 ps_root=None, **kwargs):
+                 nan_bad_chans=True, n_phons=None, **kwargs):
     # if pt[0].lower() == 'd':
     #     return load_seeg_dataset(pt, bids_root, 'seq', tw,
     #                                 nan_bad_chans=nan_bad_chans, **kwargs)
@@ -62,8 +62,7 @@ def load_dataset(pt, bids_root, phoneme_idx, tw, elec_rois=None,
     # can use uECoG data processing now that phoneme level sEEG is available
     return load_align_data(bids_root, pt, phoneme_idx, tw=tw, n_phons=n_phons,
                            elec_rois=elec_rois,
-                           nan_bad_chans=nan_bad_chans, ps_subjects=ps_subjects,
-                           ps_root=ps_root, **kwargs)
+                           nan_bad_chans=nan_bad_chans, **kwargs)
 
 
 def load_seeg_dataset(pt, bids_root, align_label_method, tw,
@@ -179,16 +178,11 @@ def _seeg_alignment_labels(method, y):
 
 
 def load_subject_data(bids_root, subject, phoneme_idx, n_phons=3,
-                      tw=None, ps_root=None, ps_subjects=None,
-                      nan_bad_chans=True, elec_rois=None, **kwargs):
+                      tw=None, nan_bad_chans=True, elec_rois=None, **kwargs):
     """Load epoched data for a single subject, remapping labels to a common
     phoneme set."""
     if tw is None:
         tw = [None, None]
-    if ps_subjects is not None and subject in ps_subjects:
-        kwargs['task'] = 'PhonemeSequence'
-        bids_root = Path(ps_root).expanduser()
-        logger.info(f'Loading PS data for {subject} from {bids_root}')
 
     dataset = PhonemeDatasetBIDS(bids_root, subject, phoneme_idx, n_phons, tw,
                                  elec_roi=elec_rois,
@@ -203,21 +197,18 @@ def load_subject_data(bids_root, subject, phoneme_idx, n_phons=3,
 
 
 def load_align_data(bids_root, subject, phoneme_idx, tw=None, elec_rois=None,
-                    nan_bad_chans=True, ps_root=None, ps_subjects=None,
-                    n_phons=None, **kwargs):
+                    nan_bad_chans=True, n_phons=None, **kwargs):
     """Load subject data and compute alignment labels (phoneme-1 labels)."""
 
 
     X, y, tw_epoch = load_subject_data(
         bids_root, subject, phoneme_idx, n_phons, tw, elec_rois=elec_rois,
-        ps_root=ps_root, ps_subjects=ps_subjects, nan_bad_chans=nan_bad_chans,
-        **kwargs)
+        nan_bad_chans=nan_bad_chans, **kwargs)
     X = X.transpose(0, 2, 1)
 
     # TODO: make this support different alignment types (only works for sequences right now)
     _, y_align, _ = load_subject_data(
-        bids_root, subject, -1, n_phons, tw,
-        ps_root=ps_root, ps_subjects=ps_subjects, **kwargs)
+        bids_root, subject, -1, n_phons, tw, **kwargs)
     y_align = np.tile(y_align.reshape(-1,n_phons), (n_phons,1,1)).reshape(-1, n_phons, order='F')
     y_align = np.array([''.join(ys.astype(str)) for ys in y_align], dtype=object)  # Convert to string labels for alignment sequences
     # _, y_align, _ = load_subject_data(
@@ -229,26 +220,60 @@ def load_align_data(bids_root, subject, phoneme_idx, tw=None, elec_rois=None,
     return X, y, y_align, tw_epoch
 
 
-def load_cross_data(bids_root, subjects, phoneme_idx, tw=None,
-                    ps_root=None, ps_subjects=None, elec_rois=None, **kwargs):
+def load_cross_data(roots, subjects, phoneme_idx, tw=None,
+                    elec_rois=None, **kwargs):
     """Load data for all cross-patient subjects."""
     X_list, y_list, y_align_list = [], [], []
     for subj in subjects:
         print(f"Loading cross-patient data for subject {subj}...")
-        # X, y, y_align, _ = load_align_data(
-        #     bids_root, subj, phoneme_idx, tw,
-        #     ps_root=ps_root, ps_subjects=ps_subjects, **kwargs)
-        X, y, y_align, _ = load_dataset(
-            subj, bids_root, phoneme_idx, tw, ps_root=ps_root,
-            ps_subjects=ps_subjects, elec_rois=elec_rois,
-            **kwargs)
-        if 0 in X.shape:
-            print(f"Warning: No data found for subject {subj}. Skipping.")
+
+        try:
+            # automatically identify the BIDS metadata for current subject
+            bids_root = _get_bids_root_for_subject(subj, roots)
+            task = _get_task_for_subject(subj, bids_root)
+
+            kwargs['task'] = task
+
+            # X, y, y_align, _ = load_align_data(
+            #     bids_root, subj, phoneme_idx, tw,
+            #     ps_root=ps_root, ps_subjects=ps_subjects, **kwargs)
+        
+            X, y, y_align, _ = load_dataset(
+                subj, bids_root, phoneme_idx, tw,
+                elec_rois=elec_rois, **kwargs)
+            if 0 in X.shape:
+                print(f"Warning: No data found for subject {subj}. Skipping.")
+                continue
+        except FileNotFoundError as e:
+            print(f"Warning: {e}. Skipping subject {subj}.")
             continue
         X_list.append(X)
         y_list.append(y)
         y_align_list.append(y_align)
     return X_list, y_list, y_align_list
+
+
+def _get_bids_root_for_subject(subj, roots):
+    """Return the BIDS root for a given subject, searching multiple roots."""
+    for root in roots:
+        bids_root = Path(root).expanduser()
+        if (bids_root / f"sub-{subj}").exists():
+            return bids_root
+    raise FileNotFoundError(
+        f"Subject {subj} not found in any of the provided BIDS roots: {roots}")
+
+
+def _get_task_for_subject(subj, bids_root):
+    """Return the task name for a given subject by inspecting the BIDS directory."""
+    subj_dir = bids_root / f"sub-{subj}"
+    if not subj_dir.exists():
+        raise FileNotFoundError(f"Subject {subj} not found in BIDS root {bids_root}")
+    tasks = np.unique([f.name.split('task-')[1].split('_')[0] for f in subj_dir.glob('**/*task-*')]).tolist()
+    if not tasks:
+        raise ValueError(f"No tasks found for subject {subj} in BIDS root {bids_root}")
+    if len(tasks) > 1:
+        print(f"Warning: Multiple tasks found for subject {subj}. Using the first one: {tasks[0]}")
+    return str(tasks[0])
 
 
 def run_fold(train_idx, test_idx, X, y, y_align, model, aligner):
@@ -363,12 +388,12 @@ def build_output_path(cfg, tw_epoch, decode_tw, other_subjects, results_root,
     desc = (f"{band}({phase})({norm_type})(alignTW{tw_str(tw_epoch)})"
             f"(decTW{tw_str(decode_tw)})({sig_str}Channel)(pts[{pt_str}])")
     if output_suffix is not None:
-            desc += f"({output_suffix})"
+        desc += f"({output_suffix})"
     outpath = BIDSPath(
         root=results_root,
         subject=cfg.patient,
         task=cfg.task,
-        datatype='decode(production)(cca)(crossPatientTask)',
+        datatype=f'decode({phase})(cca)(crossPatientTask)',
         description=desc,
         suffix=phoneme_suffix,
         extension='.h5',
@@ -387,9 +412,6 @@ def main(cfg: DictConfig) -> None:
     logger.info(f'Running with configuration:\n{OmegaConf.to_yaml(cfg)}')
 
     bids_root = Path(cfg.bids_root).expanduser()
-    ps_root = Path(cfg.ps_root).expanduser()
-    ps_subjects = list(cfg.ps_subjects)
-    lex_subjects = list(cfg.lex_subjects)
 
     tw = (OmegaConf.to_container(cfg.time_window)
           if cfg.time_window is not None else [None, None])
@@ -420,24 +442,12 @@ def main(cfg: DictConfig) -> None:
     logger.info(f'Target data: X={X_tar.shape}, y={y_tar.shape}, '
                 f'y_align={y_align_tar.shape}, tw={tw_epoch}')
 
-    # Determine which other subjects to pool
-    pool_task = cfg.pool_task.lower()
-    if pool_task in ['phoneme', 'phonemesequence', 'phoneme_sequence']:
-        other_subjects = sorted(s for s in ps_subjects if s != cfg.patient)
-    elif pool_task in ['lexical', 'lexicalrepeat', 'lexical_repeat']:
-        other_subjects = sorted(s for s in lex_subjects if s != cfg.patient)
-    elif pool_task in ['all', 'both']:
-        other_subjects = sorted(
-            s for s in ps_subjects + lex_subjects if s != cfg.patient)
-    else:
-        raise ValueError(
-            f"Unrecognized pool_task: {cfg.pool_task}. "
-            "Choose from 'phoneme', 'lexical', or 'all'.")
+    # Make sure target patient is not in the cross-patient list
+    other_subjects = sorted([s for s in cfg.cross_patients if s != cfg.patient])
 
     logger.info(f'Loading cross-patient data for {other_subjects}...')
     X_src, y_src, y_align_src = load_cross_data(
-        bids_root, other_subjects, cfg.phoneme_idx, tw, elec_rois=rois,
-        ps_root=str(ps_root), ps_subjects=ps_subjects, 
+        cfg.cross_roots, other_subjects, cfg.phoneme_idx, tw, elec_rois=rois,
         n_phons=cfg.n_phons, **bids_kwargs)
     for X_cross, y_cross, y_align_cross in zip(X_src, y_src, y_align_src):
         logger.info(f'Cross-patient data: X={X_cross.shape}, y={y_cross.shape},'
