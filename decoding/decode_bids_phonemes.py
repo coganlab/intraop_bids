@@ -96,8 +96,12 @@ def main(cfg: DictConfig) -> None:
           if cfg.time_window is not None else [None, None])
 
     # get ROI labels
-    rois = get_ctx_rois(cfg.roi, cfg.hemi, cfg.roi_dict)
-    logger.info(f'Target ROI: specified {cfg.roi}, resolved {rois}')
+    if cfg.roi is not None:
+        rois = get_ctx_rois(cfg.roi, cfg.hemi, cfg.roi_dict)
+        logger.info(f'Target ROI: specified {cfg.roi}, resolved {rois}')
+    else:
+        rois = None
+        logger.info('No ROI specified.')
 
     logger.info(f'Loading data for subject {cfg.patient}...')
     dataset = PhonemeDatasetBIDS(
