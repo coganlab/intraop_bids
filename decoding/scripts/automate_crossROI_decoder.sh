@@ -38,7 +38,10 @@ phonemeIdx=(-1)
 n_phons=3
 
 target_rois=("SMC")
-source_rois=("Auditory")
+source_rois=("Auditory" "Posterior_Temporal" "Ventral_Temporal" "Anterior_Temporal" "Inferior_Frontal"
+             "Premotor_Frontal" "Orbitofrontal" "Inferior_Parietal" "Superior_Parietal" "Insula"
+             "Cingulate" "Occipital")
+# source_rois=("Auditory")
 # target_rois=("Audtiory")
 # source_rois=("SMC")
 
@@ -52,8 +55,8 @@ nIter=10
 twMin=-1
 twMax=1
 
-task_periods=("production" "perception")
-# task_periods=("production")
+# task_periods=("production" "perception")
+task_periods=("production")
 # task_periods=("perception")
 # norm_type="MeanSub"
 norm_type="Zscore"
@@ -75,25 +78,28 @@ fi
 
 tar_subj_str=$(join , "${tar_subj_arr[@]}")
 src_subj_str=$(join , "${src_subj_arr[@]}")
-src_roi_str=$(join , "${source_rois[@]}")
+# src_roi_str=$(join , "${source_rois[@]}")
 
 for roi in "${target_rois[@]}"; do
-    for task_period in "${task_periods[@]}"; do
-        description="${task_period}${norm_type}"
-        for phon in "${phonemeIdx[@]}"; do
-            echo "----------------------------------------"
-            echo "Creating cross-ROI decoding job from ROIS ${src_roi_str} to ROI ${roi}, task_period ${task_period}, phonemeIdx ${phon}"   
-            job_name="${roi}_${task_period}_${phon}_${poolTask}_decode_crossROI"
-            echo $job_name
-            sbatch -J $job_name --mem=$mem run_crossROI_decoder.sh \
-                -r ${roi} -c ${src_roi_str} -s ${tar_subj_str} -j ${src_subj_str}\
-                -b "${bids_root}" -t ${task} \
-                -p ${phon} -f ${nFolds} -i ${nIter} \
-                -w ${twMin} -x ${twMax} -n ${n_phons} \
-                -d ${description} -u ${suffix} -e ${extension} \
-                -a "${datatype}" -m "${random_data}" -g "${tar_in_train}" \
-                -h "${output_suffix}"
-            echo "----------------------------------------"
+    for src_roi in "${source_rois[@]}"; do
+        for task_period in "${task_periods[@]}"; do
+            description="${task_period}${norm_type}"
+            for phon in "${phonemeIdx[@]}"; do
+                echo "----------------------------------------"
+                # echo "Creating cross-ROI decoding job from ROI(s) ${src_roi_str} to ROI ${roi}, task_period ${task_period}, phonemeIdx ${phon}"  
+                echo "Creating cross-ROI decoding job from ROI(s) ${src_roi} to ROI ${roi}, task_period ${task_period}, phonemeIdx ${phon}"  
+                job_name="${roi}_${task_period}_${phon}_${poolTask}_decode_crossROI"
+                echo $job_name
+                sbatch -J $job_name --mem=$mem run_crossROI_decoder.sh \
+                    -r ${roi} -c ${src_roi} -s ${tar_subj_str} -j ${src_subj_str}\
+                    -b "${bids_root}" -t ${task} \
+                    -p ${phon} -f ${nFolds} -i ${nIter} \
+                    -w ${twMin} -x ${twMax} -n ${n_phons} \
+                    -d ${description} -u ${suffix} -e ${extension} \
+                    -a "${datatype}" -m "${random_data}" -g "${tar_in_train}" \
+                    -h "${output_suffix}"
+                echo "----------------------------------------"
+            done
         done
     done
 done
