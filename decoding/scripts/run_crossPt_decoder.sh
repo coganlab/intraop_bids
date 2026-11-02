@@ -18,7 +18,7 @@ SUBJECT=""
 BIDS_ROOT="/hpc/home/zms14/cworkspace/BIDS_1.0_Lexical_µECoG/BIDS/derivatives/epoch(phonemeLevel)(CAR)"
 TASK="lexical"
 PHONEME_IDX=-1
-POOL_TASK="all"
+CROSS_SUBJECTS=""
 N_FOLDS=20
 N_ITER=10
 TW_MIN=""
@@ -29,14 +29,14 @@ EXTENSION=".fif"
 DATATYPE="epoch(band)(power)"
 OUTPUT_SUFFIX=""
 
-while getopts s:b:t:p:o:f:i:w:x:n:d:u:e:a:h: flag
+while getopts s:b:t:p:c:f:i:w:x:n:d:u:e:a:h: flag
 do
     case "${flag}" in
         s) SUBJECT=${OPTARG};;
         b) BIDS_ROOT=${OPTARG};;
         t) TASK=${OPTARG};;
         p) PHONEME_IDX=${OPTARG};;
-        o) POOL_TASK=${OPTARG};;
+        c) CROSS_SUBJECTS=${OPTARG};;
         f) N_FOLDS=${OPTARG};;
         i) N_ITER=${OPTARG};;
         w) TW_MIN=${OPTARG};;
@@ -55,6 +55,11 @@ if [[ -z "${SUBJECT}" ]]; then
     exit 1
 fi
 
+if [[ -z "${CROSS_SUBJECTS}" ]]; then
+    echo "Please specify cross-subjects with -c"
+    exit 1
+fi
+
 # Build time_window argument
 if [[ -n "${TW_MIN}" && -n "${TW_MAX}" ]]; then
     TW_ARG="time_window=[${TW_MIN},${TW_MAX}]"
@@ -66,13 +71,13 @@ fi
 # Run script with Hydra config
 # ----------------------------
 cd ..
-echo "Cross-patient decoding: subject ${SUBJECT}, pool_task ${POOL_TASK}, phoneme_idx ${PHONEME_IDX}"
+echo "Cross-patient decoding: subject ${SUBJECT}, cross subjects ${CROSS_SUBJECTS}, phoneme_idx ${PHONEME_IDX}"
 python decode_crossPt_phonemes.py \
     patient=${SUBJECT} \
     "bids_root='${BIDS_ROOT}'" \
     task=${TASK} \
     phoneme_idx=${PHONEME_IDX} \
-    pool_task=${POOL_TASK} \
+    "cross_patients=[${CROSS_SUBJECTS}]" \
     n_phons=${N_PHONS} \
     n_folds=${N_FOLDS} \
     n_iter=${N_ITER} \
