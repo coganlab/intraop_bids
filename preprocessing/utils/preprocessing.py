@@ -19,6 +19,14 @@ logger = logging.getLogger(__name__)
 
 
 def get_events(raw, filter_str):
+    raw = raw.copy()  # avoid modifying the original raw object
+    if filter_str == 'delay':
+        # events_from_annotations gets events at onset, but delay events
+        # are at rel. to stimulus offset, so we need to shift the annotations
+        # to allow for correct event extraction with the same code below
+        new_onsets = raw.annotations.onset + raw.annotations.duration
+        raw.annotations.onset = new_onsets
+        filter_str = 'stimulus'  # now we can just filter for stimulus events
     """Extract events from raw annotations matching a filter string."""
     logger.info('Getting events from annotations with filter string: '
                 f'{filter_str}')

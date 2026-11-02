@@ -63,6 +63,40 @@ def load_derivative_raw(bids_layout, subject, derivative_name='phonemeLevel',
     return raw
 
 
+def load_events_tsv(bids_layout, subject, task, derivative_name=None):
+    """Load a subject's events.tsv from a BIDS derivatives subdirectory.
+
+    Parameters
+    ----------
+    bids_layout : BIDSLayout
+        The BIDS layout object, initialized with ``derivatives=True``.
+    subject : str
+        The subject identifier (without 'sub-' prefix).
+    derivative_name : str
+        Name of the derivative dataset under ``derivatives/``.
+
+    Returns
+    -------
+    pd.DataFrame
+        The events.tsv contents.
+    """
+    if derivative_name is None:
+        root = Path(bids_layout.root)
+    else:
+        root = Path(bids_layout.root) / 'derivatives' / derivative_name
+
+    path = BIDSPath(
+        root=root,
+        subject=subject,
+        task=task,
+        datatype='ieeg',
+        description=derivative_name,
+        suffix='events',
+        extension='.tsv',
+    )
+    return pd.read_csv(path, sep='\t')
+
+
 def load_channels_tsv(bids_layout, subject):
     """Load a subject's channels.tsv as a DataFrame.
 

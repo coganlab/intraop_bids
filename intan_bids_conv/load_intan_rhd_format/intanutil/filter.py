@@ -3,8 +3,8 @@
 """Module to apply a notch filter to an input signal"""
 
 import math
-import numpy as np
 
+import numpy as np
 from load_intan_rhd_format.intanutil.report import print_progress
 
 
@@ -16,23 +16,27 @@ def apply_notch_filter(header, data):
     # applying notch filter. Similarly, if data was recorded from Intan RHX
     # software version 3.0 or later, any active notch filter was already
     # applied to the saved data, so it should not be re-applied.
-    if (header['notch_filter_frequency'] == 0
-            or header['version']['major'] >= 3):
+    if (
+        header["notch_filter_frequency"] == 0
+        or header["version"]["major"] >= 3
+    ):
         return
 
     # Apply notch filter individually to each channel in order
-    print('Applying notch filter...')
+    print("Applying notch filter...")
     print_step = 10
     percent_done = print_step
-    for i in range(header['num_amplifier_channels']):
-        data['amplifier_data'][i, :] = notch_filter(
-            data['amplifier_data'][i, :],
-            header['sample_rate'],
-            header['notch_filter_frequency'],
-            10)
+    for i in range(header["num_amplifier_channels"]):
+        data["amplifier_data"][i, :] = notch_filter(
+            data["amplifier_data"][i, :],
+            header["sample_rate"],
+            header["notch_filter_frequency"],
+            10,
+        )
 
-        percent_done = print_progress(i, header['num_amplifier_channels'],
-                                      print_step, percent_done)
+        percent_done = print_progress(
+            i, header["num_amplifier_channels"], print_step, percent_done
+        )
 
 
 def notch_filter(signal_in, f_sample, f_notch, bandwidth):
@@ -51,8 +55,8 @@ def notch_filter(signal_in, f_sample, f_notch, bandwidth):
     out = notch_filter(signal_in, 30000, 60, 10);
     """
     # Calculate parameters used to implement IIR filter
-    t_step = 1.0/f_sample
-    f_c = f_notch*t_step
+    t_step = 1.0 / f_sample
+    f_c = f_notch * t_step
     signal_length = len(signal_in)
     iir_parameters = calculate_iir_parameters(bandwidth, t_step, f_c)
 
@@ -77,25 +81,25 @@ def calculate_iir_parameters(bandwidth, t_step, f_c):
     IIR filter and return them in a dict.
     """
     parameters = {}
-    d = math.exp(-2.0*math.pi*(bandwidth/2.0)*t_step)
-    b = (1.0 + d*d) * math.cos(2.0*math.pi*f_c)
+    d = math.exp(-2.0 * math.pi * (bandwidth / 2.0) * t_step)
+    b = (1.0 + d * d) * math.cos(2.0 * math.pi * f_c)
     a0 = 1.0
     a1 = -b
-    a2 = d*d
-    a = (1.0 + d*d)/2.0
+    a2 = d * d
+    a = (1.0 + d * d) / 2.0
     b0 = 1.0
-    b1 = -2.0 * math.cos(2.0*math.pi*f_c)
+    b1 = -2.0 * math.cos(2.0 * math.pi * f_c)
     b2 = 1.0
 
-    parameters['d'] = d
-    parameters['b'] = b
-    parameters['a0'] = a0
-    parameters['a1'] = a1
-    parameters['a2'] = a2
-    parameters['a'] = a
-    parameters['b0'] = b0
-    parameters['b1'] = b1
-    parameters['b2'] = b2
+    parameters["d"] = d
+    parameters["b"] = b
+    parameters["a0"] = a0
+    parameters["a1"] = a1
+    parameters["a2"] = a2
+    parameters["a"] = a
+    parameters["b0"] = b0
+    parameters["b1"] = b1
+    parameters["b2"] = b2
     return parameters
 
 
@@ -103,12 +107,12 @@ def calculate_iir(i, signal_in, signal_out, iir_parameters):
     """Calculates a single sample of IIR filter passing signal_in through
     iir_parameters, resulting in signal_out.
     """
-    sample = ((
-        iir_parameters['a'] * iir_parameters['b2'] * signal_in[i - 2]
-        + iir_parameters['a'] * iir_parameters['b1'] * signal_in[i - 1]
-        + iir_parameters['a'] * iir_parameters['b0'] * signal_in[i]
-        - iir_parameters['a2'] * signal_out[i - 2]
-        - iir_parameters['a1'] * signal_out[i - 1])
-        / iir_parameters['a0'])
+    sample = (
+        iir_parameters["a"] * iir_parameters["b2"] * signal_in[i - 2]
+        + iir_parameters["a"] * iir_parameters["b1"] * signal_in[i - 1]
+        + iir_parameters["a"] * iir_parameters["b0"] * signal_in[i]
+        - iir_parameters["a2"] * signal_out[i - 2]
+        - iir_parameters["a1"] * signal_out[i - 1]
+    ) / iir_parameters["a0"]
 
     return sample

@@ -19,6 +19,7 @@ from scipy.stats import norm, false_discovery_control
 import mne
 from scipy.stats import permutation_test
 from joblib import Parallel, delayed
+from ieeg.calc.stats import time_perm_cluster
 
 
 def find_channel_outliers(raw: mne.io.Raw, threshold: float = 3) -> List[str]:
@@ -125,13 +126,76 @@ def remove_bad_trials(
     return NumTrials, goodtrials
 
 
+def get_significant_channels(data_interest: mne.Epochs,
+                             data_baseline: mne.Epochs,
+                             method: str = 'tpc',
+                             tw_interest: List[float] = [-0.25, 0.25],
+                             tw_baseline: List[float] = [-0.5, 0],
+                             alpha: float = 0.05,
+                             n_jobs: int = -1) -> List[str]:
+    if method == 'tpc':
+        return get_significant_channels_tpc(data_interest, data_baseline,
+                                            tw_interest, tw_baseline, alpha,
+                                            n_jobs)
+    elif method == 'avg':
+        return get_significant_channels_avg(data_interest, data_baseline,
+                                            tw_interest, tw_baseline, alpha,
+                                            n_jobs)
+    else:
+        raise ValueError(f"Invalid method: {method}")
 
-def get_significant_channels(
+
+def get_significant_channels_tpc(
+    data_interest: mne.Epochs,
+    data_baseline: mne.Epochs,
+    tw_interest: List[float] = [-0.25, 0.25],
+    tw_baseline: List[float] = [-0.5, 0],
+    alpha: float = 0.05,
+    n_jobs: int = -1
+) -> List[str]:
+    """Identify significant channels by one-sided permutation test.
+    
+    Performs statistical comparison between data of interest and baseline data
+    using permutation testing at each timepoint with subsequent cluster correction
+
+    Args:
+        data_interest: Epochs object containing data for the condition of interest.
+        data_baseline: Epochs object containing baseline data.
+        tw_interest: Time window of interest in seconds for averaging.
+            Defaults to [-0.25, 0.25].
+        tw_baseline: Baseline time window in seconds for averaging.
+            Defaults to [-0.5, 0].
+        alpha: Significance level for FDR correction. Defaults to 0.05.
+        n_jobs: Number of jobs to run in parallel. Defaults to -1 (all cores).
+    Returns:
+        List of significant channel names as they appear in the input
+        epoch objects for the data of interest.
+    """
+
+    # clip data within specified time windows
+    tw_interest = data_interest.time_as_index(tw_interest)
+    tw_baseline = data_baseline.time_as_index(tw_baseline)
+    data_interest_clipped = data_interest._data[:, :, tw_interest[0]:tw_interest[1]]
+    data_baseline_clipped = data_baseline._data[:, :, tw_baseline[0]:tw_baseline[1]]
+
+    # generate mask of significant channels and timepoints using time_perm_cluster
+    mask, _ = time_perm_cluster(data_interest_clipped, data_baseline_clipped,
+                                n_perm=1000, ignore_adjacency=1, p_thresh=alpha,
+                                n_jobs=n_jobs)
+
+    # significant channels are those that have at least one significant cluster-corrected timepoint
+    channels_mask = np.any(mask, axis=1)
+    significant_channels = [ch for ch, keep in zip(data_interest.ch_names, channels_mask) if keep]
+    return significant_channels
+
+
+def get_significant_channels_avg(
     data_interest: mne.Epochs, 
     data_baseline: mne.Epochs,
     tw_interest: List[float] = [-0.25, 0.25],
     tw_baseline: List[float] = [-0.5, 0], 
-    alpha: float = 0.05
+    alpha: float = 0.05,
+    n_jobs: int = -1
 ) -> List[str]:
     """Identify significant channels by one-sided permutation test.
     
@@ -147,7 +211,7 @@ def get_significant_channels(
         tw_baseline: Baseline time window in seconds for averaging.
             Defaults to [-0.5, 0].
         alpha: Significance level for FDR correction. Defaults to 0.05.
-
+        n_jobs: Number of jobs to run in parallel. Defaults to -1 (all cores).
     Returns:
         List of significant channel names as they appear in the input
         epoch objects for the data of interest.
@@ -181,7 +245,7 @@ def get_significant_channels(
                                alternative='greater',
                                random_state=42)
         return res.pvalue
-    p_values = Parallel(n_jobs=-1)(delayed(compute_pvalue)(ch) for ch in range(data_interest.info['nchan']))
+    p_values = Parallel(n_jobs=n_jobs)(delayed(compute_pvalue)(ch) for ch in range(data_interest.info['nchan']))
     p_values = np.array(p_values)
 
     # FDR correction - channel names are as they appear in data_interest obj

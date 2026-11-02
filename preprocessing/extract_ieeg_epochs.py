@@ -2,6 +2,7 @@ import sys
 import logging
 
 import numpy as np
+import pandas as pd
 import hydra
 from hydra.utils import instantiate
 from omegaconf import DictConfig, OmegaConf
@@ -17,9 +18,9 @@ from utils import snake2camel
 from utils.config import normalize_cfg_items
 from utils.preprocessing import (get_events, get_bad_trial_mask,
                                  preprocess_raw,
-                                 preprocess_raw_data)
-from utils.dataloaders import load_derivative_raw
-from utils.phoneme import remap_phoneme_events
+                                 preprocess_raw_data,
+                                 )
+from utils.dataloaders import load_derivative_raw, load_events_tsv
 from utils.stats import get_significant_channels
 
 logging.basicConfig(
@@ -29,6 +30,8 @@ logging.basicConfig(
     stream=sys.stdout,
 )
 logger = logging.getLogger(__name__)
+
+N_JOBS = -1
 
 
 def _apply_nan_mask(data, good_mask):
@@ -45,11 +48,13 @@ def _apply_nan_mask(data, good_mask):
 
 
 def calc_sig_channels(data, baseline, tw_interest=[-0.25, 0.25],
-                      tw_baseline=[-0.5, 0]):
+                      tw_baseline=[-0.5, 0], method='tpc', n_jobs=N_JOBS):
     logger.info('Calculating significant channels')
     sig_channels = get_significant_channels(data, baseline,
+                                            method=method,
                                             tw_interest=tw_interest,
-                                            tw_baseline=tw_baseline)
+                                            tw_baseline=tw_baseline,
+                                            n_jobs=n_jobs)
     logger.info(f'Found {len(sig_channels)} significant channels')
     # sig_channels = [str(int(ch)) for ch in sig_channels]
     return sig_channels
@@ -77,7 +82,7 @@ def main(cfg: DictConfig) -> None:
     # Include derivatives in the layout if we need to read from any of them.
     bids_layout = BIDSLayout(
         root=cfg.bids_root,
-        derivatives=bool(cfg.phoneme_level) or spatial_avg_enabled,
+        derivatives=bool(cfg.derivative_name) or spatial_avg_enabled,
     )
 
     if spatial_avg_enabled:
@@ -101,11 +106,14 @@ def main(cfg: DictConfig) -> None:
 
     # Extract events aligned to stimulus and patient response onset
     stim_events, _ = get_events(raw, 'stimulus')
+    delay_events, _ = get_events(raw, 'delay')
     resp_events, _ = get_events(raw, 'response')
 
     def get_tp_events(task_period):
         if task_period == 'stimulus':
             return stim_events
+        elif task_period == 'delay':
+            return delay_events
         elif task_period == 'response':
             return resp_events
         else:
@@ -134,8 +142,6 @@ def main(cfg: DictConfig) -> None:
     logger.info(f'Good trials per channel: min={n_good_per_ch.min()}, '
                 f'max={n_good_per_ch.max()}, mean={n_good_per_ch.mean():.1f}')
 
-    n_trials_total = len(epochs_base)
-
     # Load task period and feature configs
     task_periods = normalize_cfg_items(cfg.task_periods, 'cfg_task_periods')
     features = normalize_cfg_items(cfg.features, 'cfg_features')
@@ -144,8 +150,8 @@ def main(cfg: DictConfig) -> None:
     if spatial_avg_enabled:
         epoch_dir = (f'epoch(spatialAvgContact{int(spatial_avg_cfg.contact_size)})'
                      f'({cfg.reference})')
-    elif cfg.phoneme_level:
-        epoch_dir = f'epoch(phonemeLevel)({cfg.reference})'
+    elif cfg.derivative_name:
+        epoch_dir = f'epoch({cfg.derivative_name})({cfg.reference})'
     else:
         epoch_dir = f'epoch({cfg.reference})'
     outpath = BIDSPath(
@@ -175,39 +181,49 @@ def main(cfg: DictConfig) -> None:
     np.save(mask_save_path, good_mask)
     logger.info(f'Saved per-channel good trial mask to {mask_save_path}')
 
-    good_mask_feat = good_mask
-    nPhons = 1
-    if cfg.phoneme_level:
-        logger.info('##### Phoneme-level mode: borrowing derivative events '
+    if cfg.derivative_name:
+        logger.info('##### Sub-event derivative mode: borrowing derivative events '
                     '#####')
         # Load the phoneme-level derivative only to extract its annotations,
         # then transplant them onto the already-preprocessed raw. This keeps
         # the current channel structure (which may be spatial-averaged) and
         # avoids the channel mismatch that would arise from swapping in the
         # phoneme-level raw, whose channels track the original recording.
-        raw_phon = load_derivative_raw(
-            bids_layout, cfg.patient, cfg.derivative_name,
-            **OmegaConf.to_container(cfg.load_kwargs))
-        raw.set_annotations(raw_phon.annotations)
-        del raw_phon
+        events_df_deriv = load_events_tsv(bids_layout, cfg.patient, cfg.task, derivative_name=cfg.derivative_name)
+        stim_df_deriv = events_df_deriv[['stimulus' in x for x in events_df_deriv['trial_type']]]
+        resp_df_deriv = events_df_deriv[['response' in x for x in events_df_deriv['trial_type']]]
 
-        phon_resp_events, _ = get_events(raw, 'response')
-        phon_epochs_count = trial_ieeg(
-            raw, event=phon_resp_events, times=[0, 0.1], preload=True)
-        nPhons = len(phon_epochs_count) // n_trials_total
-        logger.info(f'Phonemes per trial: {nPhons}')
+        items_per_trial_stim = [sum(stim_df_deriv['trial'] == i) for i in stim_df_deriv['trial'].unique()]
+        items_per_trial_resp = [sum(resp_df_deriv['trial'] == i) for i in resp_df_deriv['trial'].unique()]
 
-        good_mask_feat = np.repeat(good_mask, nPhons, axis=1)
+        logger.info(f'Stimulus items per trial: {items_per_trial_stim}')
+        logger.info(f'Response items per trial: {items_per_trial_resp}')
+
+        good_mask_feat_stim = np.repeat(good_mask, items_per_trial_stim, axis=1)
+        good_mask_feat_resp = np.repeat(good_mask, items_per_trial_resp, axis=1)
         logger.info(f'Expanded good trial mask: {good_mask.shape[1]} trials '
-                    f'-> {good_mask_feat.shape[1]} phoneme observations')
+                    f'-> {good_mask_feat_stim.shape[1]} (stim) and {good_mask_feat_resp.shape[1]} (resp) items')
 
+        raw_sub = load_derivative_raw(
+            bids_layout, cfg.patient, derivative_name=cfg.derivative_name,
+            desc=cfg.derivative_name, preload=False)
+        raw.set_annotations(raw_sub.annotations)  # transplant derivative annotations onto preprocessed raw
+
+        # no delay events here - only make sense on the trial level, not the sub-event level
         stim_events, _ = get_events(raw, 'stimulus')
         resp_events, _ = get_events(raw, 'response')
+    else:
+        items_per_trial_stim = [1] * good_mask.shape[1]
+        items_per_trial_resp = [1] * good_mask.shape[1]
+        good_mask_feat_stim = good_mask
+        good_mask_feat_resp = good_mask
 
     for tp_cfg in task_periods:
         logger.info(f'##### Processing task period: {tp_cfg.name} #####')
 
         tp_events = get_tp_events(tp_cfg.align_to)
+        good_mask_feat = (good_mask_feat_stim if tp_cfg.align_to == 'stimulus'
+                          else good_mask_feat_resp)
 
         epoch = trial_ieeg(
             raw, event=tp_events, times=tp_cfg.full_times, preload=True,
@@ -237,19 +253,26 @@ def main(cfg: DictConfig) -> None:
             logger.info('...extracted task features')
 
             logger.info(f'Cropping task data to {tp_cfg.feat_times[0]} to '
-                        f'{tp_cfg.feat_times[1]} ms from {tp_cfg.name} anchor '
+                        f'{tp_cfg.feat_times[1]} s from {tp_cfg.name} anchor '
                         'onset')
             base_data = base_data.crop(tmin=-0.5, tmax=0)
             feat_data = feat_data.crop(tmin=tp_cfg.feat_times[0],
                                        tmax=tp_cfg.feat_times[1])
 
             if cfg.sig_channels:
-                feat_data_sig = feat_data[::nPhons]
+                # determine entries corresponding to trial starts for each trial period
+                items_per_trial = items_per_trial_stim if tp_cfg.align_to == 'stimulus' else items_per_trial_resp
+                trial_starts = np.cumsum(items_per_trial) - np.array(items_per_trial)
+
+                # use only trial-aligned data for significance
+                feat_data_sig = feat_data[trial_starts]
                 _apply_nan_mask(feat_data_sig._data, good_mask)
                 base_data_sig = base_data.copy()
                 _apply_nan_mask(base_data_sig._data, good_mask)
                 sig_channels = calc_sig_channels(feat_data_sig, base_data_sig,
-                                                 tw_interest=tp_cfg.sig_times)
+                                                 tw_interest=tp_cfg.sig_times,
+                                                 method=cfg.sig_channels_method,
+                                                 n_jobs=N_JOBS)
                 del base_data_sig
                 sig_channels_clean = [ch for ch in sig_channels if ch not in
                                       raw.info['bads']]
@@ -287,9 +310,9 @@ def main(cfg: DictConfig) -> None:
 
             # Resample to lower frequency for output
             logger.info(f'Resampling {feat_cfg.name} to {feat_cfg.out_fs} Hz')
-            base_data = base_data.resample(sfreq=feat_cfg.out_fs, n_jobs=-1)
-            feat_z = feat_z.resample(sfreq=feat_cfg.out_fs, n_jobs=-1)
-            feat_ms = feat_ms.resample(sfreq=feat_cfg.out_fs, n_jobs=-1)
+            base_data = base_data.resample(sfreq=feat_cfg.out_fs, n_jobs=N_JOBS)
+            feat_z = feat_z.resample(sfreq=feat_cfg.out_fs, n_jobs=N_JOBS)
+            feat_ms = feat_ms.resample(sfreq=feat_cfg.out_fs, n_jobs=N_JOBS)
 
             # Apply per-channel NaN mask to mark bad trial-channel data
             _apply_nan_mask(base_data._data, good_mask_base_apply)

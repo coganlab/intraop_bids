@@ -13,5 +13,9 @@ Pipeline (2 user calls):
 
 __version__ = "0.2.0"
 
-from .bids_writer import BIDSConverter
-from .update_events_from_txt import update_events_from_txt
+from .bids_writer import BIDSConverter as BIDSConverter
+from .update_events_from_txt import (
+    update_events_from_txt as update_events_from_txt,
+)
+
+__all__ = ["BIDSConverter", "update_events_from_txt"]
