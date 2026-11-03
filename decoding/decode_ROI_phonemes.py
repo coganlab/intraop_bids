@@ -16,13 +16,9 @@ from tqdm import tqdm
 from joblib import Parallel, delayed
 from mne_bids import BIDSPath
 
-# sys.path.insert(0, str(Path(__file__).resolve().parent))
-
-from utils.dataset import PhonemeDatasetBIDS, format_band_str
+from utils.dataset import PhonemeDatasetBIDS, build_output_path
 from utils.decoders import DimRedReshape, NaNImputer3D, decodeResultsBIDS
-from utils.alignment import AlignCCA
-from utils.crossPt_decoders import (crossPtDecoder_sepDimRed,
-                                    crossPtDecoder_twSepAlign)
+
 
 logging.basicConfig(
     level=logging.INFO,
@@ -188,52 +184,6 @@ def load_align_data(bids_root, subject, phoneme_idx, tw=None, elec_rois=None,
     return X, y, y_align, tw_epoch
 
 
-def build_output_path(cfg, tw_epoch, roi, results_root, output_suffix=None):
-    """Construct a BIDSPath for saving cross-patient decoding results."""
-    description = cfg.description
-    phase = ('Perception' if 'perception' in description.lower()
-             else 'Production')
-
-    if 'zscore' in description.lower():
-        norm_type = 'Zscore'
-    elif 'meansub' in description.lower():
-        norm_type = 'MeanSub'
-    else:
-        norm_type = 'raw'
-
-    def tw_str(tw):
-        fmt = ['pre' if tw[0] < 0 else 'post',
-               'pre' if tw[1] < 0 else 'post']
-        return f"[{fmt[0]}{abs(tw[0]):.2g},{fmt[1]}{abs(tw[1]):.2g}]"
-
-    sig_str = 'sig' if 'sig' in cfg.datatype else 'all'
-
-    datatype_str = f'decode({phase})'
-    if cfg.compute_chance:
-        datatype_str += '(chance)'
-
-    phoneme_suffix = ('pAll' if cfg.phoneme_idx == -1
-                      else f'p{cfg.phoneme_idx}')
-
-    band = format_band_str(cfg.suffix)
-
-    desc = (f"{band}({phase})({norm_type})(tw{tw_str(tw_epoch)})"
-            f"({sig_str}Channel)")
-    if output_suffix is not None:
-        desc += f"({output_suffix})"
-    outpath = BIDSPath(
-        root=results_root,
-        subject=roi,
-        task=cfg.task,
-        datatype=datatype_str,
-        description=desc,
-        suffix=phoneme_suffix,
-        extension='.h5',
-        check=False,
-    )
-    return outpath
-
-
 def get_ctx_rois(roi, hemi=None, roi_dict=None):
     # default to both hemispheres if not specified
     if hemi is None:
@@ -295,8 +245,10 @@ def main(cfg: DictConfig) -> None:
     else:
         results_root = bids_root.parent / 'decoding(crossROI)'
 
-    outpath = build_output_path(cfg, tw_epoch, cfg.roi, results_root,
-                                cfg.output_suffix)
+    outpath = build_output_path(
+                results_root, 'decode(ROI)', cfg.roi, cfg.task,
+                cfg.description, cfg.datatype, cfg.suffix, tw, cfg.phoneme_idx,
+                output_suffix=cfg.output_suffix)
     outpath.mkdir(exist_ok=True)
     logger.info(f'Saving results to {outpath.fpath}')
     decoder.save_results(outpath.fpath, overwrite=True)

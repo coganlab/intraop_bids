@@ -18,7 +18,7 @@ from mne_bids import BIDSPath
 
 # sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from utils.dataset import PhonemeDatasetBIDS, format_band_str
+from utils.dataset import PhonemeDatasetBIDS, build_output_path
 from utils.decoders import DimRedReshape, NaNImputer3D, decodeResultsBIDS
 from utils.alignment import AlignCCA
 from utils.crossPt_decoders import (crossPtDecoder_sepDimRed,
@@ -33,14 +33,15 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 PS2ARPA = {
-    'a': 'AA', 'ae': 'EH', 'i': 'IY', 'u': 'UH',
+    'a': 'AA', 'ae': 'EH', 'i': 'IY', 'u': 'UW',
     'b': 'B', 'p': 'P', 'v': 'V', 'g': 'G', 'k': 'K',
+    'UH': 'UW', 'AE': 'EH'
 }
 TARGET_EVENT_ID = {
     'AA': 1, 'AE': 2, 'AH': 3, 'AO': 4, 'AY': 5, 'B': 6, 'D': 7,
     'EH': 8, 'EY': 9, 'F': 10, 'G': 11, 'HH': 12, 'IH': 13,
     'IY': 14, 'JH': 15, 'K': 16, 'L': 17, 'M': 18, 'N': 19,
-    'OW': 20, 'P': 21, 'R': 22, 'S': 23, 'T': 24, 'UH': 25,
+    'OW': 20, 'P': 21, 'R': 22, 'S': 23, 'T': 24, 'UW': 25,
     'V': 26, 'W': 27, 'Z': 28,
 }
 
@@ -289,50 +290,6 @@ def aligned_decode(X_tar, y_tar, y_align_tar=None, aligner=None,
     return scores, y_pred_all
 
 
-def build_output_path(cfg, tw_epoch, decode_tw, target_roi, source_rois,
-                      results_root, output_suffix=None):
-    """Construct a BIDSPath for saving cross-patient decoding results."""
-    description = cfg.description
-    phase = ('Perception' if 'perception' in description.lower()
-             else 'Production')
-
-    if 'zscore' in description.lower():
-        norm_type = 'Zscore'
-    elif 'meansub' in description.lower():
-        norm_type = 'MeanSub'
-    else:
-        norm_type = 'raw'
-
-    def tw_str(tw):
-        fmt = ['pre' if tw[0] < 0 else 'post',
-               'pre' if tw[1] < 0 else 'post']
-        return f"[{fmt[0]}{abs(tw[0]):.2g},{fmt[1]}{abs(tw[1]):.2g}]"
-
-    sig_str = 'sig' if 'sig' in cfg.datatype else 'all'
-    roi_str = ','.join(source_rois) if (isinstance(source_rois, list) or OmegaConf.is_list(cfg.source_rois)) else source_rois
-
-    phoneme_suffix = ('pAll' if cfg.phoneme_idx == -1
-                      else f'p{cfg.phoneme_idx}')
-
-    band = format_band_str(cfg.suffix)
-
-    desc = (f"{band}({phase})({norm_type})(alignTW{tw_str(tw_epoch)})"
-            f"(decTW{tw_str(decode_tw)})({sig_str}Channel)(crossROIs[{roi_str}])")
-    if output_suffix is not None:
-        desc += f"({output_suffix})"
-    outpath = BIDSPath(
-        root=results_root,
-        subject=target_roi,
-        task=cfg.task,
-        datatype=f'decode({phase})(cca)(crossROI)',
-        description=desc,
-        suffix=phoneme_suffix,
-        extension='.h5',
-        check=False,
-    )
-    return outpath
-
-
 def get_ctx_rois(roi, hemi=None, roi_dict=None):
     # default to both hemispheres if not specified
     if hemi is None:
@@ -420,8 +377,11 @@ def main(cfg: DictConfig) -> None:
     else:
         results_root = bids_root.parent / 'decoding(crossROI)'
 
-    outpath = build_output_path(cfg, tw_epoch, decode_tw, cfg.target_rois, cfg.source_rois,
-                                results_root, cfg.output_suffix)
+    outpath = build_output_path(
+            results_root, 'decode(cca)(crossROI)', cfg.target_rois, cfg.task,
+            cfg.description, cfg.datatype, cfg.suffix, decode_tw, cfg.phoneme_idx,
+            other_subjects=cfg.source_rois, tw_epoch=tw_epoch,
+            output_suffix=cfg.output_suffix)
     outpath.mkdir(exist_ok=True)
     logger.info(f'Saving results to {outpath.fpath}')
     decode_handler.save_results(outpath.fpath, overwrite=True)

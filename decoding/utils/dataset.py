@@ -1,4 +1,5 @@
 from pathlib import Path
+import hashlib
 
 import numpy as np
 from mne import read_epochs, get_montage_volume_labels
@@ -76,6 +77,73 @@ def _collapse_hierarchical_event_id(events, event_id):
         [old_to_new[int(c)] for c in events[:, 2]],
         dtype=events.dtype)
     return new_events, new_event_id
+
+
+def build_output_path(results_root, category, patient, task, description,
+                      datatype, suffix, decode_tw, phoneme_idx,
+                      other_subjects=[], tw_epoch=None, output_suffix=""):
+    """Construct a BIDSPath for saving decoding results."""
+    phase = ('Perception' if 'perception' in description.lower()
+             else 'Production')
+
+    if 'zscore' in description.lower():
+        norm_type = 'Zscore'
+    elif 'meansub' in description.lower():
+        norm_type = 'MeanSub'
+    else:
+        norm_type = 'raw'
+
+    def tw_str(tw):
+        fmt = ['pre' if tw[0] < 0 else 'post',
+                'pre' if tw[1] < 0 else 'post']
+        return f"[{fmt[0]}{abs(tw[0]):.2g},{fmt[1]}{abs(tw[1]):.2g}]"
+
+    sig_str = 'sig' if 'sig' in datatype else 'all'
+
+    phoneme_suffix = ('pAll' if phoneme_idx == -1
+                      else f'p{phoneme_idx}')
+
+    band = format_band_str(suffix)
+
+    desc = f"{band}({phase})({norm_type})"
+    if tw_epoch is not None:
+        desc += f"alignTW{tw_str(tw_epoch)}"
+    desc += f"(decTW{tw_str(decode_tw)})({sig_str}Channel)"
+    pt_str = _create_pt_token(','.join(other_subjects))
+    if pt_str:
+        desc += f"(pts[{pt_str}])"
+    if output_suffix is not None and output_suffix != '':
+        desc += f"({output_suffix})"
+
+    outpath = BIDSPath(
+        root=results_root,
+        subject=patient,
+        task=task,
+        datatype=category,
+        description=desc,
+        suffix=phoneme_suffix,
+        extension='.h5',
+        check=False,
+    )
+    return outpath
+
+
+def _create_pt_token(pts_str: str | list[str]) -> str:
+    """Short, stable hash of a cohort string for use in filenames.
+
+    A ``pts[...]`` list can contain dozens of patients, which overruns the OS
+    filename-length limit. We hash it to a fixed-length token and store the
+    full patient list as metadata inside the result file instead.
+    """
+    if isinstance(pts_str, list):
+        pts_str = ','.join(pts_str)
+    elif not isinstance(pts_str, str):
+        raise TypeError(f'pts_str must be str or list[str], got {type(pts_str)}')
+
+    if not pts_str:
+        return ''
+
+    return hashlib.sha1(pts_str.encode()).hexdigest()[:12]
 
 
 class PhonemeDatasetBIDS:

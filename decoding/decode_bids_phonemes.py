@@ -11,7 +11,7 @@ from mne_bids import BIDSPath
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from utils.dataset import PhonemeDatasetBIDS, format_band_str
+from utils.dataset import PhonemeDatasetBIDS, build_output_path
 from utils.decoders import DimRedReshape, NaNImputer3D, decodeResultsBIDS
 
 logging.basicConfig(
@@ -21,49 +21,6 @@ logging.basicConfig(
     stream=sys.stdout,
 )
 logger = logging.getLogger(__name__)
-
-
-def build_output_path(cfg, twEpoch, results_root, output_suffix=None):
-    """Construct a BIDSPath for saving decoding results."""
-    description = cfg.description
-    phase = ('Perception' if 'perception' in description.lower()
-             else 'Production')
-    band = format_band_str(cfg.suffix)
-
-    if 'zscore' in description.lower():
-        norm_type = 'Zscore'
-    elif 'meansub' in description.lower():
-        norm_type = 'MeanSub'
-    else:
-        norm_type = 'raw'
-
-    tw_fmt = ['pre' if twEpoch[0] < 0 else 'post',
-              'pre' if twEpoch[1] < 0 else 'post']
-    tw_str = (f"[{tw_fmt[0]}{abs(twEpoch[0]):.2g},"
-              f"{tw_fmt[1]}{abs(twEpoch[1]):.2g}]")
-
-    sig_str = 'sig' if 'sig' in cfg.datatype else 'all'
-
-    datatype_str = 'decode(production)(patientSpecific)'
-    if cfg.compute_chance:
-        datatype_str += '(chance)'
-
-    phoneme_suffix = ('pAll' if cfg.phoneme_idx == -1
-                      else f'p{cfg.phoneme_idx}')
-
-    desc = (f"{band}({phase})({norm_type})(tw{tw_str})({sig_str}Channel)")
-    if output_suffix is not None:
-        desc += f"({output_suffix})"
-    outpath = BIDSPath(
-        root=results_root,
-        subject=cfg.patient,
-        datatype=datatype_str,
-        description=desc,
-        suffix=phoneme_suffix,
-        extension='.h5',
-        check=False,
-    )
-    return outpath
 
 
 def get_ctx_rois(roi, hemi=None, roi_dict=None):
@@ -129,7 +86,10 @@ def main(cfg: DictConfig) -> None:
     else:
         results_root = bids_root.parent / 'decoding'
 
-    outpath = build_output_path(cfg, dataset.twEpoch, results_root, cfg.output_suffix)
+    outpath = build_output_path(
+                    results_root, 'decode(patientSpecific)', cfg.patient,
+                    cfg.task, cfg.description, cfg.datatype, cfg.suffix, tw,
+                    cfg.phoneme_idx, output_suffix=cfg.output_suffix)
     outpath.mkdir(exist_ok=True)
     logger.info(f'Saving results to {outpath.fpath}')
     decoder.save_results(outpath.fpath, overwrite=True)

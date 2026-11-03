@@ -17,7 +17,7 @@ from mne_bids import BIDSPath
 
 # sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from utils.dataset import PhonemeDatasetBIDS, format_band_str
+from utils.dataset import PhonemeDatasetBIDS, build_output_path
 from utils.decoders import DimRedReshape, NaNImputer3D, decodeResultsBIDS
 from utils.alignment import AlignCCA
 from utils.crossPt_decoders import (crossPtDecoder_sepDimRed,
@@ -43,12 +43,6 @@ TARGET_EVENT_ID = {
     'OW': 20, 'P': 21, 'R': 22, 'S': 23, 'T': 24, 'UW': 25,
     'V': 26, 'W': 27, 'Z': 28,
 }
-
-
-# def get_n_phons(subject, ps_subjects):
-#     if subject in ps_subjects:
-#         return 3
-#     return 5
 
 
 def load_dataset(pt, bids_root, phoneme_idx, tw, elec_rois=None,
@@ -233,10 +227,6 @@ def load_cross_data(roots, subjects, phoneme_idx, tw=None,
             task = _get_task_for_subject(subj, bids_root)
 
             kwargs['task'] = task
-
-            # X, y, y_align, _ = load_align_data(
-            #     bids_root, subj, phoneme_idx, tw,
-            #     ps_root=ps_root, ps_subjects=ps_subjects, **kwargs)
         
             X, y, y_align, _ = load_dataset(
                 subj, bids_root, phoneme_idx, tw,
@@ -358,50 +348,6 @@ def aligned_decode(X_tar, y_tar, y_align_tar=None, aligner=None,
     return scores, y_pred_all
 
 
-def build_output_path(cfg, tw_epoch, decode_tw, other_subjects, results_root,
-                      output_suffix=None):
-    """Construct a BIDSPath for saving cross-patient decoding results."""
-    description = cfg.description
-    phase = ('Perception' if 'perception' in description.lower()
-             else 'Production')
-
-    if 'zscore' in description.lower():
-        norm_type = 'Zscore'
-    elif 'meansub' in description.lower():
-        norm_type = 'MeanSub'
-    else:
-        norm_type = 'raw'
-
-    def tw_str(tw):
-        fmt = ['pre' if tw[0] < 0 else 'post',
-               'pre' if tw[1] < 0 else 'post']
-        return f"[{fmt[0]}{abs(tw[0]):.2g},{fmt[1]}{abs(tw[1]):.2g}]"
-
-    sig_str = 'sig' if 'sig' in cfg.datatype else 'all'
-    pt_str = ','.join(other_subjects)
-
-    phoneme_suffix = ('pAll' if cfg.phoneme_idx == -1
-                      else f'p{cfg.phoneme_idx}')
-
-    band = format_band_str(cfg.suffix)
-
-    desc = (f"{band}({phase})({norm_type})(alignTW{tw_str(tw_epoch)})"
-            f"(decTW{tw_str(decode_tw)})({sig_str}Channel)(pts[{pt_str}])")
-    if output_suffix is not None:
-        desc += f"({output_suffix})"
-    outpath = BIDSPath(
-        root=results_root,
-        subject=cfg.patient,
-        task=cfg.task,
-        datatype=f'decode({phase})(cca)(crossPatientTask)',
-        description=desc,
-        suffix=phoneme_suffix,
-        extension='.h5',
-        check=False,
-    )
-    return outpath
-
-
 @hydra.main(version_base=None, config_path="config",
             config_name="decode_crossPt_phonemes")
 def main(cfg: DictConfig) -> None:
@@ -433,9 +379,6 @@ def main(cfg: DictConfig) -> None:
 
     # Load target patient data
     logger.info(f'Loading target data for {cfg.patient}...')
-    # X_tar, y_tar, y_align_tar, tw_epoch = load_align_data(
-    #     bids_root, cfg.patient, cfg.phoneme_idx, tw,
-    #     ps_root=str(ps_root), ps_subjects=ps_subjects, **bids_kwargs)
     X_tar, y_tar, y_align_tar, tw_epoch = load_dataset(
         cfg.patient, bids_root, cfg.phoneme_idx, tw, elec_rois=rois,
         n_phons=cfg.n_phons, **bids_kwargs)
@@ -482,8 +425,11 @@ def main(cfg: DictConfig) -> None:
     else:
         results_root = bids_root.parent / 'decoding'
 
-    outpath = build_output_path(cfg, tw_epoch, decode_tw, other_subjects,
-                                results_root, cfg.output_suffix)
+    outpath = build_output_path(
+        results_root, 'decode(cca)(crossPatient)', cfg.patient, cfg.task,
+        cfg.description, cfg.datatype, cfg.suffix, decode_tw, cfg.phoneme_idx,
+        other_subjects=other_subjects, tw_epoch=tw_epoch,
+        output_suffix=cfg.output_suffix)
     outpath.mkdir(exist_ok=True)
     logger.info(f'Saving results to {outpath.fpath}')
     decode_handler.save_results(outpath.fpath, overwrite=True)
