@@ -32,9 +32,10 @@ phonemeIdx=(-1)
 n_phons=3
 
 # rois=("SMC" "Auditory")
-rois=("SMC" "Auditory" "PosteriorTemporal" "VentralTemporal" "AnteriorTemporal"
-      "InferiorFrontal" "PremotorFrontal" "Orbitofrontal" "InferiorParietal"
-      "SuperiorParietal" "Insula" "Cingulate" "Occipital")
+# rois=("SMC" "Auditory" "PosteriorTemporal" "VentralTemporal" "AnteriorTemporal"
+#       "InferiorFrontal" "PremotorFrontal" "Orbitofrontal" "InferiorParietal"
+#       "SuperiorParietal" "Insula" "Cingulate" "Occipital")
+rois=("SMC" "Auditory" "PosteriorTemporal" "Orbitofrontal" "Insula" "Cingulate" "Occipital")
 # rois=("PosteriorTemporal" "VentralTemporal" "AnteriorTemporal"
 #       "InferiorFrontal" "PremotorFrontal" "InferiorParietal"
 #       "SuperiorParietal")

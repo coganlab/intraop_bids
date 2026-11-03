@@ -37,8 +37,11 @@ bids_root="/hpc/home/zms14/cworkspace/BIDS-1.4_Phoneme_sequencing/BIDS/derivativ
 phonemeIdx=(-1)
 n_phons=3
 
-target_rois=("SMC")
-source_rois=("Auditory" "PosteriorTemporal" "VentralTemporal" "AnteriorTemporal" "InferiorFrontal"
+# target_rois=("SMC")
+target_rois=("SMC" "Auditory" "PosteriorTemporal" "VentralTemporal" "AnteriorTemporal" "InferiorFrontal"
+             "PremotorFrontal" "Orbitofrontal" "InferiorParietal" "SuperiorParietal" "Insula"
+             "Cingulate" "Occipital")
+source_rois=("SMC" "Auditory" "PosteriorTemporal" "VentralTemporal" "AnteriorTemporal" "InferiorFrontal"
              "PremotorFrontal" "Orbitofrontal" "InferiorParietal" "SuperiorParietal" "Insula"
              "Cingulate" "Occipital")
 # source_rois=("Auditory")
@@ -82,6 +85,10 @@ src_subj_str=$(join , "${src_subj_arr[@]}")
 
 for roi in "${target_rois[@]}"; do
     for src_roi in "${source_rois[@]}"; do
+        if [ "$src_roi" == "$roi" ]; then
+            echo "Skipping cross-ROI decoding for same ROI ${roi}"
+            continue
+        fi
         for task_period in "${task_periods[@]}"; do
             description="${task_period}${norm_type}"
             for phon in "${phonemeIdx[@]}"; do
